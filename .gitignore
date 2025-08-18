@@ -1,0 +1,9 @@
+initX.npy
+initY.npy
+Xs
+latent_space_data
+logs
+networks
+online_runs
+*.pyc
+outputs

@@ -1047,9 +1047,113 @@ class L96TwoLevel_updated(object):
             np.atleast_1d(fn(h.Y2_mean, ax))
         ])
 
-  
+
+class NNpAEpD(nn.Module):
+    def __init__(self, past_timesteps, n_neighbours, latent_dims, nodes_per_layer=16):
+        super().__init__()
+
+        self.past_timesteps = past_timesteps
+        self.n_neighbours = n_neighbours
+        self.latent_dims = latent_dims
+        self.nodes_per_layer = nodes_per_layer
+
+        self.encoder = nn.Sequential(
+            nn.Linear(self.past_timesteps, 32),
+            nn.ReLU(),
+            nn.Linear(32, 16),
+            nn.ReLU(),
+            nn.Linear(16, 12),
+            nn.ReLU(),
+            nn.Linear(12, self.latent_dims)
+        )
+
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dims, 12),
+            nn.ReLU(),
+            nn.Linear(12, 16),
+            nn.ReLU(),
+            nn.Linear(16, 32),
+            nn.ReLU(),
+            nn.Linear(32, past_timesteps)
+        )
+
+        self.neural_net = nn.Sequential(
+            nn.Linear(latent_dims + n_neighbours, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, 1)
+        )
+
+        # Loss
+        self.train_loss = []
+        self.test_loss = []
+
+        # R^2
+        self.R2 = []
+
+        # Metadata
+        self.memory_cutoff = None
+        self.tau = None
+        self.model_name = 'NN+AE+D'
+
+    def forward(self, x):
+        x_past = x[:, :self.past_timesteps]
+        x_present = x[:, self.past_timesteps:]
+        latent_space = self.encoder(x_past)
+        x_reconstructed = self.decoder(latent_space)
+        x_nn = torch.cat((latent_space, x_present), dim=1)
+        y_pred = self.neural_net(x_nn)
+        
+        return y_pred, x_reconstructed
+
+
+class NN(nn.Module):
+    def __init__(self,past_timesteps, n_neighbours, nodes_per_layer=16):
+        super().__init__()
+        self.past_timesteps = past_timesteps
+        self.n_neighbours = n_neighbours
+        self.nodes_per_layer = nodes_per_layer
+
+        self.neural_net = nn.Sequential(
+            nn.Linear(self.past_timesteps + self.n_neighbours, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, 1)
+        )
+
+        # Loss
+        self.train_loss = []
+        self.test_loss = []
+
+        # R^2
+        self.R2 = []
+
+        # Metadata
+        self.memory_cutoff = None
+        self.tau = None
+        self.model_name = 'NN'
+        self.latent_dims = 0
+
+    def forward(self, x):
+        y_pred = self.neural_net(x)
+        return y_pred
+    
+      
 def run_online(ms, taus, models, past_timesteps):
-    from parameterizations import NNpAEpD, NNpAE, NN, FCNN
     initX = np.load('initX.npy')[:8]
     initY = np.load('initY.npy')[:8*32]
     np.random.seed(123)
@@ -1072,7 +1176,6 @@ def run_online(ms, taus, models, past_timesteps):
                 mn = model
             
             print(m, tau)
-
             path = f'networks/{model}/input_lagg={pt}/m={m}_tau={tau}_{mn}.pkl'
             parametrization = torch.load(path, weights_only=False, map_location='cpu')
             parametrization.model_name = model
@@ -1090,7 +1193,7 @@ def run_online(ms, taus, models, past_timesteps):
 
             # Save run
             save_dir = Path(f'./online_runs/{model}/input_lagg={pt}')
-            save_path = f'{save_dir}/time={simulation_time}MTU_m={m}_tau={tau}_w=0.0001.nc'
+            save_path = f'{save_dir}/time={simulation_time}MTU_m={m}_tau={tau}.nc'
             if not save_dir.exists(): 
                 os.makedirs(save_dir) 
             #h.to_netcdf(f'./online_runs/{model}/input_lagg={pt}/time={simulation_time}MTU_m={m}_tau={tau}.nc', mode='w')
@@ -1120,7 +1223,7 @@ def load_equation_models(dim):
     path = path_dict[dim]
     with open(path, 'rb') as file:
         model = pickle.load(file)
-    model.equations_ = model.get_hof()  # I lost the equations_ df at some point, luckily I reconstructed it
+    model.equations_ = model.get_hof()  # I lost the equations_ df at some point, luckily I can reconstruct them
 
     return model
 
@@ -1170,7 +1273,7 @@ if __name__=='__main__':
     #path = 'networks/phi_0_0.0_8_m=None_tau=None_20250717112413.pkl'  # Phi_0,0,8
     #print(path)
     #run_NNpAE_online(path)
-    run_online([0.001], [0.001], ['NN+AE+D'], past_timesteps=1000)
+    run_online([1.0], [100.0], ['NN'], past_timesteps=0)
 
 
     # initX = np.load('initX.npy')[:8]

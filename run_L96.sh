@@ -4,10 +4,8 @@
 job_name="L96_ML"
 
 #SBATCH --job-name="L96_ML"                # Job name
-#SBATCH --output=logs/${job_name}_%j.out      # Stdout and stderr go to this file
-# #SBATCH --gpus=1
-# #SBATCH --mem=128G
-# #SBATCH --time=16:00:00
+#SBATCH --output=logs/_%j.out      # Stdout and stderr go to this file
+
 
 # Load necessary modules 
 # module load pytorch

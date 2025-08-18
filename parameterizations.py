@@ -281,23 +281,21 @@ def generate_data(L96, past_timesteps, BATCH_SIZE=3000, train_share=.8):
     # Get data
     X = L96.history.X.values.astype(np.float32).T
     B = L96.history.B.values.astype(np.float32).T
+
+    X = return_lagged_input_vector(X, past_timesteps)
+    X = torch.from_numpy(X.copy())  # Hade some stride problems here, hence the copy workaround
+    train_ind = int(len(X) * train_share)
+    X_train = X[:train_ind]
+    X_test = X[train_ind:]
+    X_train = X_train.to(device)
+    X_test = X_test.to(device)
+    print('finished X')
     
     B = return_lagged_input_vector(B, past_timesteps)  
     B = B[:, -1].reshape(-1, 1)  # B is always B(t) -> past_timesteps = x but only the last value is taken
-    X_lagged = return_lagged_input_vector(X, past_timesteps)
-    X_lagged = torch.from_numpy(X_lagged.copy())  # Hade some stride problems here, hence the copy
     B = torch.from_numpy(B)
-
-    # train test split
-    train_ind = int(len(X_lagged) * train_share)
-    X_train = X_lagged[:train_ind]
     B_train = B[:train_ind]
-    X_test = X_lagged[train_ind:]
     B_test = B[train_ind:]
-
-    # Send data to device
-    X_train = X_train.to(device)
-    X_test = X_test.to(device)
     B_train = B_train.to(device)
     B_test = B_test.to(device)
 
@@ -586,10 +584,11 @@ def sensitivity_experiment(pt, models=['baseline_nn', 'nn', 'NN+AE'], latent_dim
         files = os.listdir('online_runs/NO_PARAMETRIZATION')
         files.sort()
         path = f'online_runs/NO_PARAMETRIZATION/' + files[i]
+        print(path)
         i += 1
         with open(path, 'rb') as file:
                 L96 = pickle.load(file)
-        Nt = 1000 * 1000 
+        Nt = 700 * 1000 
 
         L96_subset = L962LvlMem(m=m, tau=tau)
         L96_subset._history_X = L96._history_X[:Nt]
@@ -656,13 +655,14 @@ def sensitivity_experiment(pt, models=['baseline_nn', 'nn', 'NN+AE'], latent_dim
                 if 'nn' in models:
                     pass
                 else:  # Data was already generated previously
+                    print('generate data')
                     X_train, X_test, B_train, B_test = generate_data(L96, past_timesteps=past_timesteps)
                 
-                for latent_dims in [1, 3, 5]:
-                    nnpae_model = NNpAE(past_timesteps=past_timesteps, latent_dims=latent_dims)
-                    nnpae_model = train_model(X_train, X_test, B_train, B_test, nnpae_model, num_epochs=num_epochs)
-                    nnpae_model = set_model_metadata(nnpae_model, past_timesteps, latent_dims, 'NN+AE', m, tau)
-                    save_model(nnpae_model)
+                print('init model')
+                nnpae_model = NNpAE(past_timesteps=past_timesteps, latent_dims=latent_dims)
+                nnpae_model = train_model(X_train, X_test, B_train, B_test, nnpae_model, num_epochs=num_epochs)
+                nnpae_model = set_model_metadata(nnpae_model, past_timesteps, latent_dims, 'NN+AE', m, tau)
+                #save_model(nnpae_model)
             
 
         print('Time for experiment [min]: ', (time.time() - ts) / 60)
@@ -818,8 +818,10 @@ if __name__=='__main__':
     #print(args.model_type, args.past_timesteps, args.latent_dims)
     #sensitivity_experiment(args.past_timesteps, models=['baseline_nn', 'nn', 'NN+AE'])
     #sensitivity_experiment(args.past_timesteps, models=[args.model_type], latent_dims=None)
+    #sensitivity_experiment(1000, ['NN+AE'], latent_dims=1)
 
-    with open('online_runs/NN/input_lagg=0/time=1000MTU_m=0.001_tau=0.001.pkl', 'rb') as file:
+    m, tau = 1.0, 100.0
+    with open(f'online_runs/NO_PARAMETRIZATION/time=10000000_m={m}_tau={tau}.pkl', 'rb') as file:
         L96 = pickle.load(file)
 
     X = L96.history.X.values
@@ -838,13 +840,17 @@ if __name__=='__main__':
 
     X_train = torch.tensor(return_lagged_input_vector_opt(X_train.T, past_timesteps), dtype=torch.float32, device=device)
     X_test = torch.tensor(return_lagged_input_vector_opt(X_test.T, past_timesteps), dtype=torch.float32, device=device)
-    B_train = torch.tensor(return_lagged_input_vector_opt(B_train.T, past_timesteps), dtype=torch.float32, device=device)[:,0].reshape(-1,1)
-    B_test = torch.tensor(return_lagged_input_vector_opt(B_test.T, past_timesteps), dtype=torch.float32, device=device)[:,0].reshape(-1,1)
+    B_train = torch.tensor(return_lagged_input_vector_opt(B_train.T, past_timesteps), dtype=torch.float32, device=device)[:,-1].reshape(-1,1)
+    B_test = torch.tensor(return_lagged_input_vector_opt(B_test.T, past_timesteps), dtype=torch.float32, device=device)[:,-1].reshape(-1,1)
 
-    for w in [1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1]:
+    for w in [1.e-3]:
         print(w)
         model = NNpAEpD(n_neighbours=1, past_timesteps=past_timesteps, latent_dims=8)
-        model = train_model_NNpAEpD(X_train, X_test, B_train, B_test, model, num_epochs=5000, weight_decay=w)
+        #model = NNpAE(past_timesteps=past_timesteps, latent_dims=8)
+        model.memory_cutoff = m
+        model.tau = tau
+        model = train_model_NNpAEpD(X_train, X_test, B_train, B_test, model, num_epochs=2000, weight_decay=w)
+        #model = train_model(X_train, X_test, B_train, B_test, model, num_epochs=2000, weight_decay=w)
         save_model(model, w=w)
 
 
