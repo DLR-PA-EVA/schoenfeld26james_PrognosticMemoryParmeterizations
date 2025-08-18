@@ -21,52 +21,6 @@ np.random.seed(123)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Model classes
-class Autoencoder(nn.Module):
-    def __init__(self, past_timesteps, latent_dims):
-        super().__init__()
-
-        self.past_timesteps = past_timesteps
-        self.latent_dims = latent_dims
-
-        self.encoder = nn.Sequential(
-            nn.Linear(self.past_timesteps, 32),
-            nn.ReLU(),
-            nn.Linear(32, 16),
-            nn.ReLU(),
-            nn.Linear(16, 12),
-            nn.ReLU(),
-            nn.Linear(12, self.latent_dims)
-        )
-
-        self.decoder = nn.Sequential(
-            nn.Linear(self.latent_dims, 12),
-            nn.ReLU(),
-            nn.Linear(12, 16),
-            nn.ReLU(),
-            nn.Linear(16, 32),
-            nn.ReLU(),
-            nn.Linear(32, self.past_timesteps)
-        )
-        
-        # Loss
-        self.train_loss = []
-        self.test_loss = []
-
-        # R^2
-        self.R2 = []
-
-        # Metadata
-        self.memory_cutoff = None
-        self.tau = None
-        self.model_name = 'autoencoder'
-
-    def forward(self, x):
-        encoded = self.encoder(x)
-        decoded = self.decoder(encoded)
-
-        return decoded
-
-
 class NNpAE(nn.Module):
     def __init__(self, past_timesteps, latent_dims, nodes_per_layer=16):
         super().__init__()
@@ -306,75 +260,6 @@ def generate_data(L96, past_timesteps, BATCH_SIZE=3000, train_share=.8):
     # dataloader_test = Data.DataLoader(dataset_test, batch_size=BATCH_SIZE)
 
     return X_train, X_test, B_train, B_test
-
-
-def generate_data_autoencoder(L96, past_timesteps, BATCH_SIZE=3000, train_share=.8):
-    # Get data
-    X = L96.history.X.values.astype(np.float32).T
-    X_lagged = return_lagged_input_vector(X, past_timesteps)
-    X_lagged = torch.from_numpy(X_lagged.copy())
-
-    # Remove X(t)
-    X_lagged = X_lagged[:, :-1]
-
-    # train test split
-    train_ind = int(len(X_lagged) * train_share)
-    X_train = X_lagged[:train_ind]
-    X_test = X_lagged[train_ind:]
-
-    # Send data to device
-    X_train = X_train.to(device)
-    X_test = X_test.to(device)
-
-    # Make DataLoader
-    # dataset_train = Data.TensorDataset(X_train, X_train)
-    # dataset_test = Data.TensorDataset(X_test, X_test)
-    # dataloader_train = Data.DataLoader(dataset_train, batch_size=BATCH_SIZE)
-    # dataloader_test = Data.DataLoader(dataset_test, batch_size=BATCH_SIZE)
-
-    return X_train, X_test
-
-
-def generate_data_nn_autoencoder(L96, past_timesteps, model_autoencoder, BATCH_SIZE=3000, train_share=.8):
-    # Get data
-    X = L96.history.X.values.astype(np.float32).T
-    B = L96.history.B.values.astype(np.float32).T
-
-    B = return_lagged_input_vector(B, past_timesteps)  
-    B = B[:, -1]  # B is always B(t) -> past_timesteps = x but only the last value is taken
-    X_lagged = return_lagged_input_vector(X, past_timesteps)
-    X_lagged, B = torch.from_numpy(X_lagged.copy()),torch.from_numpy(B)
-
-    # Compute Z
-    X_past = X_lagged[:, :-1]
-    X_past = X_past.to(device)
-    with torch.no_grad():
-        model_autoencoder.eval()
-        Z = model_autoencoder.encoder(X_past)
-    ZX = torch.zeros((Z.shape[0], Z.shape[1] + 1))
-    ZX[:, :Z.shape[1]] = Z
-    ZX[:, Z.shape[1]] = X_lagged[:, -1]  # Present x-state
-
-    # train test split
-    train_ind = int(len(X_lagged) * train_share)
-    ZX_train = ZX[:train_ind]
-    B_train = B[:train_ind]
-    ZX_test = ZX[train_ind:]
-    B_test = B[train_ind:]
-
-    # Send data to device
-    ZX_train = ZX_train.to(device)
-    ZX_test = ZX_test.to(device)
-    B_train = B_train.to(device)
-    B_test = B_test.to(device)
-
-    # Make DataLoader
-    # dataset_train = Data.TensorDataset(ZX_train, B_train)
-    # dataset_test = Data.TensorDataset(ZX_test, B_test)
-    # dataloader_train = Data.DataLoader(dataset_train, batch_size=BATCH_SIZE)
-    # dataloader_test = Data.DataLoader(dataset_test, batch_size=BATCH_SIZE)
-
-    return ZX_train, ZX_test, B_train, B_test
 
 
 # Model training
@@ -803,11 +688,6 @@ def create_latent_space_trainig_data_multi_trajectory(m, tau, past_timesteps=100
         print(f'Done. Total samples saved: {total_samples}')
 
 
-    
-    
-    
-
-import time
 if __name__=='__main__':
     parser = argparse.ArgumentParser(description='Run L96 sensitivity experiment')
     parser.add_argument('--model_type', type=str, default='nn', help='Model type to use (e.g., nn, rf, svm)')
