@@ -4,7 +4,7 @@ import torch.nn as nn
 from util import return_lagged_input_vector, transpose_if_1d, return_lagged_input_vector_and_present_k, return_lagged_input_vector_opt
 from torchmetrics.regression import R2Score
 import torch.utils.data as Data
-from L96 import L96TwoLevelMemory, L962LvlMem
+from L96 import L962LvlMem
 import os
 from pathlib import Path
 import argparse
@@ -217,7 +217,40 @@ class NNpAEpD(nn.Module):
         return y_pred, x_reconstructed
 
 
-def save_model(model, w):
+class ODE_Z:
+    def __init__(self, path_ODE, path_AE, path_NN, model_name='ODE_Z', latent_dims=8, past_timesteps=1000, m=0.001, tau=0.001):
+        '''
+        This class is a wrapper that allows the interplay between the existing L96 implementation and a fitted pysindy model
+        path: Path to pysindy model
+        '''
+        with open(path_ODE, 'rb') as file:
+            self.model = pickle.load(file)
+        
+        with open(path_AE, 'rb') as file:
+            self.AE = torch.load(file, map_location='cpu', weights_only=False)
+        
+        with open(path_NN, 'rb') as file:
+            self.NN = torch.load(file, map_location='cpu', weights_only=False)
+    
+        self.model_name = model_name
+        self.latent_dims = latent_dims
+        self.past_timesteps = past_timesteps
+        self.memory_cutoff = m
+        self.tau = tau
+
+    def _rhs_Z_dt(self, z, x):
+        return self.model.predict(x=z, u=x)
+
+    def forward(self, z, x, dt=0.001):
+        k1 = self._rhs_Z_dt(z, x)
+        k2 = self._rhs_Z_dt(z + .5 * dt * k1, x)
+        k3 = self._rhs_Z_dt(z + .5 * dt * k2, x)
+        k4 = self._rhs_Z_dt(z + dt * k3, x)
+
+        return z + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
+
+
+def save_model(model):
     # Save the model
     if model.model_name == 'NN+AE':
         model_name = f'NN+AE_latent_dims={model.latent_dims}'
@@ -227,7 +260,7 @@ def save_model(model, w):
     save_dir = Path('networks') / model_name / f'input_lagg={model.past_timesteps}'
     if not save_dir.exists(): 
         os.makedirs(save_dir) 
-    torch.save(model, f'{save_dir}/m={model.memory_cutoff}_tau={model.tau}_{model.model_name}_w={w}.pkl')
+    torch.save(model, f'{save_dir}/m={model.memory_cutoff}_tau={model.tau}_{model.model_name}.pkl')
 
 
 # Feature creation
@@ -700,38 +733,44 @@ if __name__=='__main__':
     #sensitivity_experiment(args.past_timesteps, models=[args.model_type], latent_dims=None)
     #sensitivity_experiment(1000, ['NN+AE'], latent_dims=1)
 
-    m, tau = 1.0, 100.0
-    with open(f'online_runs/NO_PARAMETRIZATION/time=10000000_m={m}_tau={tau}.pkl', 'rb') as file:
-        L96 = pickle.load(file)
+    # m, tau = 1.0, 100.0
+    # with open(f'online_runs/NO_PARAMETRIZATION/time=10000000_m={m}_tau={tau}.pkl', 'rb') as file:
+    #     L96 = pickle.load(file)
 
-    X = L96.history.X.values
-    B = L96.history.B.values
-    X = X[:500_000]
-    B = B[:500_000]
+    # X = L96.history.X.values
+    # B = L96.history.B.values
+    # X = X[:500_000]
+    # B = B[:500_000]
 
-    Ntrain = int(X.shape[0] * .8)
-    def train_test_split(arr, Ntrain):
-        return arr[:Ntrain], arr[Ntrain:]
+    # Ntrain = int(X.shape[0] * .8)
+    # def train_test_split(arr, Ntrain):
+    #     return arr[:Ntrain], arr[Ntrain:]
 
-    X_train, X_test = train_test_split(X, Ntrain)
-    B_train, B_test = train_test_split(B, Ntrain)
+    # X_train, X_test = train_test_split(X, Ntrain)
+    # B_train, B_test = train_test_split(B, Ntrain)
 
-    past_timesteps = 1000
+    # past_timesteps = 1000
 
-    X_train = torch.tensor(return_lagged_input_vector_opt(X_train.T, past_timesteps), dtype=torch.float32, device=device)
-    X_test = torch.tensor(return_lagged_input_vector_opt(X_test.T, past_timesteps), dtype=torch.float32, device=device)
-    B_train = torch.tensor(return_lagged_input_vector_opt(B_train.T, past_timesteps), dtype=torch.float32, device=device)[:,-1].reshape(-1,1)
-    B_test = torch.tensor(return_lagged_input_vector_opt(B_test.T, past_timesteps), dtype=torch.float32, device=device)[:,-1].reshape(-1,1)
+    # X_train = torch.tensor(return_lagged_input_vector_opt(X_train.T, past_timesteps), dtype=torch.float32, device=device)
+    # X_test = torch.tensor(return_lagged_input_vector_opt(X_test.T, past_timesteps), dtype=torch.float32, device=device)
+    # B_train = torch.tensor(return_lagged_input_vector_opt(B_train.T, past_timesteps), dtype=torch.float32, device=device)[:,-1].reshape(-1,1)
+    # B_test = torch.tensor(return_lagged_input_vector_opt(B_test.T, past_timesteps), dtype=torch.float32, device=device)[:,-1].reshape(-1,1)
 
-    for w in [1.e-3]:
-        print(w)
-        model = NNpAEpD(n_neighbours=1, past_timesteps=past_timesteps, latent_dims=8)
-        #model = NNpAE(past_timesteps=past_timesteps, latent_dims=8)
-        model.memory_cutoff = m
-        model.tau = tau
-        model = train_model_NNpAEpD(X_train, X_test, B_train, B_test, model, num_epochs=2000, weight_decay=w)
-        #model = train_model(X_train, X_test, B_train, B_test, model, num_epochs=2000, weight_decay=w)
-        save_model(model, w=w)
+    # for w in [1.e-3]:
+    #     print(w)
+    #     model = NNpAEpD(n_neighbours=1, past_timesteps=past_timesteps, latent_dims=8)
+    #     #model = NNpAE(past_timesteps=past_timesteps, latent_dims=8)
+    #     model.memory_cutoff = m
+    #     model.tau = tau
+    #     model = train_model_NNpAEpD(X_train, X_test, B_train, B_test, model, num_epochs=2000, weight_decay=w)
+    #     #model = train_model(X_train, X_test, B_train, B_test, model, num_epochs=2000, weight_decay=w)
+    #     save_model(model, w=w)
+
+    path_ODE = '/work/bd1179/b309297/ODE_discovery/ODEs/dim=8_deg=1_lambda=0.0_finitedifference.pkl'
+    path_NN = 'networks/NN+AE+D/input_lagg=1000/m=0.001_tau=0.001_NN+AE+D_w=0.001.pkl'
+    path_AE = 'networks/NN+AE+D/input_lagg=1000/m=0.001_tau=0.001_NN+AE+D_w=0.001.pkl'
+    ode = ODE_Z(path_ODE, path_AE, path_NN, model_name='ODE_Z', latent_dims=8, past_timesteps=1000)
+    save_model(ode)
 
 
     #create_latent_space_trainig_data(m=.001, tau=.001, past_timesteps=1000, latent_dims=5, num_samples=1_000)
