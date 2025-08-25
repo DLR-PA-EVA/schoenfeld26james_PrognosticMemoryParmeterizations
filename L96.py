@@ -24,18 +24,20 @@ class L962LvlMem(object):
         - a variable past_timesteps that informs L96 how many past X-steps need to be saved for the parametrization
         '''
         self.parametrization = parametrization
-        try:
-            self.parametrization.eval()
-        except AttributeError:
-            print(f'{self.parametrization.model_name} is not directly a pytorch class \nAssume that you passed on ODE parametrization')
-            self.parametrization.AE.eval()
-            self.parametrization.NN.eval()
-        
+        if self.parametrization:
+            try:
+                self.parametrization.eval()
+            except AttributeError:
+                print(f'{self.parametrization.model_name} is not directly a pytorch class \nAssume that you passed on ODE parametrization')
+                self.parametrization.AE.eval()
+                self.parametrization.NN.eval()
+            
         # Initialize state variables
         self.X = np.random.rand(self.K) if X_init is None else X_init.copy()
         self.Y = np.zeros(self.K * self.J) if Y_init is None else Y_init.copy()
-        self.Z = None
-        self.Z_ODE = None
+        if hasattr(self.parametrization, 'latent_dims'):
+            self.Z = np.zeros((self.K, self.parametrization.latent_dims))  # Z0 = 0
+            self.Z_ODE = np.zeros((self.K, self.parametrization.latent_dims))  # Z_ODE0 = 0
 
         # Memory parameters
         self.tau = tau  # Decay rate of the kernel
@@ -84,9 +86,6 @@ class L962LvlMem(object):
             if self.parametrization.model_name == 'ODE_Z_online':
                 dic['Z'] = xr.DataArray(np.array(self._history_Z), dims=['time', 'x', 'latent_dims'])
                 coords['latent_dims'] = np.arange(self.parametrization.latent_dims)
-
-        print('Z, Z_ODE, B')
-        print(np.array(self._history_Z).shape, np.array(self._history_Z_ODE).shape, np.array(self._history_B).shape)
 
         return xr.Dataset(
             dic,
@@ -155,10 +154,12 @@ class L962LvlMem(object):
             self._history_X.append(self.X.copy())
             self._history_B.append(B.copy())
             if 'NN+AE' in self.parametrization.model_name:
-                self._history_Z.append(np.zeros((self.K, self.parametrization.latent_dims)))
+                self._history_Z.append(self.Z)
             if 'ODE_Z' in self.parametrization.model_name:
-                self._history_Z_ODE.append(np.zeros((self.K, self.parametrization.latent_dims)))
-                self._history_Z.append(np.zeros((self.K, self.parametrization.latent_dims)))
+                self._history_Z_ODE.append(self.Z_ODE)
+                self._history_Z.append(self.Z)
+        
+        return B
            
     def step_parametrized(self):
         # Check if enough data is available to run the parametrization
@@ -190,27 +191,16 @@ class L962LvlMem(object):
                     x_present = torch.unsqueeze(x[:, -1], 1)
                     self.Z = self.parametrization.AE.encoder(x_past)
                     self.Z_ODE = self.Z.numpy().copy()
-                    x_nn = torch.cat((self.Z, x_present), dim=1)
-                    B = self.parametrization.NN.neural_net(x_nn).numpy().flatten()
+                    self.step()  # do unparametrized step
+                    return  # return, otherwise two RK steps will be made for X
                 else:
                     if 'online' in self.parametrization.model_name:
-                        # Z = self.parametrization.forward(Z, self.X, self.dt)  # Predict Z derivatives and integrate using RK4
-                        # Z = torch.from_numpy(Z.astype(np.float32))
-                        # x_present = torch.from_numpy(self.X)
-                        # x_nn = torch.cat((Z, x_present), dim=1)
+                        self.Z = self.parametrization.forward(self.Z, self.X, self.dt)  # Predict Z derivatives and integrate using RK4
+                        self.Z = torch.from_numpy(self.Z.astype(np.float32))
+                        x_present = torch.from_numpy(self.X.astype(np.float32),).reshape(-1, 1)
+                        x_nn = torch.cat((self.Z, x_present), dim=1)
                         # with torch.no_grad():
-                        #     B = self.parametrization.model_NNpAE.neural_net(x_nn).numpy().flatten()
-
-                        # with torch.no_grad():
-                        #     x = np.array(self.param_memory_X).astype(np.float32).T
-                        #     x = torch.from_numpy(x)
-                        #     if hasattr(self.parametrization, 'encoder'):
-                        #         x_past = x[:, :-1]
-                        #         x_present = torch.unsqueeze(x[:, -1], 1)
-                        #         Z = self.parametrization.model_NNpAE.encoder(x_past)
-                        #         x_nn = torch.cat((Z, x_present), dim=1)
-                        #         B = self.parametrization.model_NNpAE.neural_net(x_nn).numpy().flatten()
-                        pass
+                        B = self.parametrization.NN.forward(x_nn).numpy().flatten()
                     else:
                         # Compute Z_ODE allongside Z from the AE, but dont use it for the parametrization
                         self.Z_ODE = self.parametrization.forward(self.Z_ODE, self.X, self.dt)  # Predict Z derivatives and integrate using RK4
@@ -219,8 +209,8 @@ class L962LvlMem(object):
                         x_past = x[:, :-1]
                         x_present = torch.unsqueeze(x[:, -1], 1)
                         self.Z = self.parametrization.AE.encoder(x_past)
-                        x_nn = torch.cat((self.Z, x_present), dim=1)
-                        B = self.parametrization.AE.neural_net(x_nn).numpy().flatten()
+                        self.step()  # do unparametrized step and return
+                        return  # return, otherwise two RK steps will be made for X
 
             else:
                 x = np.array(self.param_memory_X).astype(np.float32).T
@@ -451,10 +441,12 @@ class ODE_Z:
         return z + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
 
 
-def run_online(ms, taus, models, past_timesteps, simulation_time = 1000):
+def run_online(ms, taus, models, past_timesteps, simulation_time=1000):
     initX = np.load('initX.npy')[:8]
     initY = np.load('initY.npy')[:8*32]
     np.random.seed(123)
+    # initX = None
+    # initY = None
     print(models)
 
     if not isinstance(models, list):
@@ -473,8 +465,9 @@ def run_online(ms, taus, models, past_timesteps, simulation_time = 1000):
                 mn = model
             
             print(m, tau)
-            path = f'networks/{model}/input_lagg={pt}/m={m}_tau={tau}_{mn}.pkl'
+            path = f'networks/{model}/input_lagg={pt}/m={m}_tau={tau}_{mn}_w=0.001.pkl'
             parametrization = torch.load(path, weights_only=False, map_location='cpu')
+            print(path)
             parametrization.model_name = model
             L96 = L962LvlMem(X_init=initX, Y_init=initY, save_dt=.001, m=m, tau=tau, memory_activation_func=None, parametrization=parametrization)
             L96.iterate(simulation_time)
@@ -490,11 +483,12 @@ def run_online(ms, taus, models, past_timesteps, simulation_time = 1000):
 
             # Save run
             save_dir = Path(f'./online_runs/{model}/input_lagg={pt}')
-            save_path = f'{save_dir}/time={simulation_time}MTU_m={m}_tau={tau}.nc'
+            save_path = f'{save_dir}/time={simulation_time}MTU_m={m}_tau={tau}_w=0.001.nc'
             if not save_dir.exists(): 
                 os.makedirs(save_dir) 
             #h.to_netcdf(f'./online_runs/{model}/input_lagg={pt}/time={simulation_time}MTU_m={m}_tau={tau}.nc', mode='w')
             h.to_netcdf(save_path, mode='w')
+            print(save_path)
             print(h)
 
 
@@ -568,7 +562,7 @@ if __name__=='__main__':
     #path = 'networks/phi_0_0.0_8_m=None_tau=None_20250717112413.pkl'  # Phi_0,0,8
     #print(path)
     #run_NNpAE_online(path)
-    run_online([0.001], [0.001], ['ODE_Z'], past_timesteps=1000, simulation_time=10)
+    run_online([0.001], [0.001], ['NN+AE+D'], past_timesteps=1000, simulation_time=1000)
 
 
     # initX = np.load('initX.npy')[:8]

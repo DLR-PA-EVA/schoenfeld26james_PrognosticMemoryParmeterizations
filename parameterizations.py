@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 from util import return_lagged_input_vector, transpose_if_1d, return_lagged_input_vector_and_present_k, return_lagged_input_vector_opt
 from torchmetrics.regression import R2Score
-import torch.utils.data as Data
 from L96 import L962LvlMem
 import os
 from pathlib import Path
@@ -146,6 +145,40 @@ class NN(nn.Module):
         self.model_name = 'NN'
         self.latent_dims = 0
 
+
+class NNpODE(nn.Module):
+    def __init__(self,past_timesteps, latent_dims, nodes_per_layer=16):
+        super().__init__()
+        self.past_timesteps = past_timesteps
+        self.latent_dims = latent_dims
+        self.nodes_per_layer = nodes_per_layer
+
+        self.neural_net = nn.Sequential(
+            nn.Linear(self.latent_dims + 1, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, 1)
+        )
+
+        # Loss
+        self.train_loss = []
+        self.test_loss = []
+
+        # R^2
+        self.R2 = []
+
+        # Metadata
+        self.memory_cutoff = 0.001
+        self.tau = 0.001
+        self.model_name = 'NN+ODE'
+    
     def forward(self, x):
         y_pred = self.neural_net(x)
         return y_pred
@@ -250,7 +283,7 @@ class ODE_Z:
         return z + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
 
 
-def save_model(model):
+def save_model(model, w=0.0):
     # Save the model
     if model.model_name == 'NN+AE':
         model_name = f'NN+AE_latent_dims={model.latent_dims}'
@@ -260,7 +293,7 @@ def save_model(model):
     save_dir = Path('networks') / model_name / f'input_lagg={model.past_timesteps}'
     if not save_dir.exists(): 
         os.makedirs(save_dir) 
-    torch.save(model, f'{save_dir}/m={model.memory_cutoff}_tau={model.tau}_{model.model_name}.pkl')
+    torch.save(model, f'{save_dir}/m={model.memory_cutoff}_tau={model.tau}_{model.model_name}_w={w}.pkl')
 
 
 # Feature creation
@@ -285,12 +318,6 @@ def generate_data(L96, past_timesteps, BATCH_SIZE=3000, train_share=.8):
     B_test = B[train_ind:]
     B_train = B_train.to(device)
     B_test = B_test.to(device)
-
-    # Make DataLoader
-    # dataset_train = Data.TensorDataset(X_train, B_train)
-    # dataset_test = Data.TensorDataset(X_test, B_test)
-    # dataloader_train = Data.DataLoader(dataset_train, batch_size=BATCH_SIZE)
-    # dataloader_test = Data.DataLoader(dataset_test, batch_size=BATCH_SIZE)
 
     return X_train, X_test, B_train, B_test
 
@@ -733,44 +760,44 @@ if __name__=='__main__':
     #sensitivity_experiment(args.past_timesteps, models=[args.model_type], latent_dims=None)
     #sensitivity_experiment(1000, ['NN+AE'], latent_dims=1)
 
-    # m, tau = 1.0, 100.0
-    # with open(f'online_runs/NO_PARAMETRIZATION/time=10000000_m={m}_tau={tau}.pkl', 'rb') as file:
-    #     L96 = pickle.load(file)
+    m, tau = 0.001, 0.001
+    with open(f'online_runs/NO_PARAMETRIZATION/time=10000000_m={m}_tau={tau}.pkl', 'rb') as file:
+        L96 = pickle.load(file)
 
-    # X = L96.history.X.values
-    # B = L96.history.B.values
-    # X = X[:500_000]
-    # B = B[:500_000]
+    X = L96.history.X.values
+    B = L96.history.B.values
+    X = X[:600_000]
+    B = B[:600_000]
 
-    # Ntrain = int(X.shape[0] * .8)
-    # def train_test_split(arr, Ntrain):
-    #     return arr[:Ntrain], arr[Ntrain:]
+    Ntrain = int(X.shape[0] * .8)
+    def train_test_split(arr, Ntrain):
+        return arr[:Ntrain], arr[Ntrain:]
 
-    # X_train, X_test = train_test_split(X, Ntrain)
-    # B_train, B_test = train_test_split(B, Ntrain)
+    X_train, X_test = train_test_split(X, Ntrain)
+    B_train, B_test = train_test_split(B, Ntrain)
 
-    # past_timesteps = 1000
+    past_timesteps = 1000
 
-    # X_train = torch.tensor(return_lagged_input_vector_opt(X_train.T, past_timesteps), dtype=torch.float32, device=device)
-    # X_test = torch.tensor(return_lagged_input_vector_opt(X_test.T, past_timesteps), dtype=torch.float32, device=device)
-    # B_train = torch.tensor(return_lagged_input_vector_opt(B_train.T, past_timesteps), dtype=torch.float32, device=device)[:,-1].reshape(-1,1)
-    # B_test = torch.tensor(return_lagged_input_vector_opt(B_test.T, past_timesteps), dtype=torch.float32, device=device)[:,-1].reshape(-1,1)
+    X_train = torch.tensor(return_lagged_input_vector_opt(X_train.T, past_timesteps), dtype=torch.float32, device=device)
+    X_test = torch.tensor(return_lagged_input_vector_opt(X_test.T, past_timesteps), dtype=torch.float32, device=device)
+    B_train = torch.tensor(return_lagged_input_vector_opt(B_train.T, past_timesteps), dtype=torch.float32, device=device)[:,-1].reshape(-1,1)
+    B_test = torch.tensor(return_lagged_input_vector_opt(B_test.T, past_timesteps), dtype=torch.float32, device=device)[:,-1].reshape(-1,1)
 
-    # for w in [1.e-3]:
-    #     print(w)
-    #     model = NNpAEpD(n_neighbours=1, past_timesteps=past_timesteps, latent_dims=8)
-    #     #model = NNpAE(past_timesteps=past_timesteps, latent_dims=8)
-    #     model.memory_cutoff = m
-    #     model.tau = tau
-    #     model = train_model_NNpAEpD(X_train, X_test, B_train, B_test, model, num_epochs=2000, weight_decay=w)
-    #     #model = train_model(X_train, X_test, B_train, B_test, model, num_epochs=2000, weight_decay=w)
-    #     save_model(model, w=w)
+    for w in [1.e-3]:
+        print(w)
+        model = NNpAEpD(n_neighbours=1, past_timesteps=past_timesteps, latent_dims=8)
+        #model = NNpAE(past_timesteps=past_timesteps, latent_dims=8)
+        model.memory_cutoff = m
+        model.tau = tau
+        model = train_model_NNpAEpD(X_train, X_test, B_train, B_test, model, num_epochs=2000, weight_decay=w)
+        #model = train_model(X_train, X_test, B_train, B_test, model, num_epochs=2000, weight_decay=w)
+        save_model(model, w=w)
 
-    path_ODE = '/work/bd1179/b309297/ODE_discovery/ODEs/dim=8_deg=1_lambda=0.0_finitedifference.pkl'
-    path_NN = 'networks/NN+AE+D/input_lagg=1000/m=0.001_tau=0.001_NN+AE+D_w=0.001.pkl'
-    path_AE = 'networks/NN+AE+D/input_lagg=1000/m=0.001_tau=0.001_NN+AE+D_w=0.001.pkl'
-    ode = ODE_Z(path_ODE, path_AE, path_NN, model_name='ODE_Z', latent_dims=8, past_timesteps=1000)
-    save_model(ode)
+    # path_ODE = '/work/bd1179/b309297/ODE_discovery/ODEs/dim=8_deg=1_lambda=0.0_finitedifference.pkl'
+    # path_NN = 'networks/NN+ODE/input_lagg=1000/m=0.001_tau=0.001_NN+ODE.pkl'
+    # path_AE = 'networks/NN+AE+D/input_lagg=1000/m=0.001_tau=0.001_NN+AE+D_w=0.001.pkl'
+    # ode = ODE_Z(path_ODE, path_AE, path_NN, model_name='ODE_Z_online', latent_dims=8, past_timesteps=1000)
+    # save_model(ode)
 
 
     #create_latent_space_trainig_data(m=.001, tau=.001, past_timesteps=1000, latent_dims=5, num_samples=1_000)
