@@ -7,3 +7,5 @@ networks
 online_runs
 *.pyc
 outputs
+ODEs
+sim_Z.ipynb

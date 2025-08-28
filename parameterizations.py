@@ -1,7 +1,8 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from util import return_lagged_input_vector, transpose_if_1d, return_lagged_input_vector_and_present_k, return_lagged_input_vector_opt
+from torch.utils.data import TensorDataset, DataLoader
+from util import return_lagged_input_vector, transpose_if_1d, return_lagged_input_vector_and_present_k, return_lagged_input_vector_opt, create_lagged_features
 from torchmetrics.regression import R2Score
 from L96 import L962LvlMem
 import os
@@ -10,6 +11,7 @@ import argparse
 from tqdm import tqdm, trange
 import pickle
 import itertools
+from torch.utils.data import Dataset
 
 
 # Load initial conditions for L96 model
@@ -251,13 +253,15 @@ class NNpAEpD(nn.Module):
 
 
 class ODE_Z:
-    def __init__(self, path_ODE, path_AE, path_NN, model_name='ODE_Z', latent_dims=8, past_timesteps=1000, m=0.001, tau=0.001):
+    def __init__(self, path_ODE, path_AE, path_NN, model_name='ODE_Z', latent_dims=8, K=8, past_timesteps=1000, m=0.001, tau=0.001, dt=0.001):
         '''
         This class is a wrapper that allows the interplay between the existing L96 implementation and a fitted pysindy model
         path: Path to pysindy model
         '''
         with open(path_ODE, 'rb') as file:
-            self.model = pickle.load(file)
+            # self.model = pickle.load(file)
+            self.coefs = np.load(file)
+            self.coefs = torch.tensor(self.coefs, dtype=torch.float32).T  
         
         with open(path_AE, 'rb') as file:
             self.AE = torch.load(file, map_location='cpu', weights_only=False)
@@ -270,17 +274,23 @@ class ODE_Z:
         self.past_timesteps = past_timesteps
         self.memory_cutoff = m
         self.tau = tau
+        self.dt = torch.tensor(dt, dtype=torch.float32)
+        self.K = K
+        self.one = torch.ones((self.K, 1), dtype=torch.float32)
 
     def _rhs_Z_dt(self, z, x):
-        return self.model.predict(x=z, u=x)
+        # return self.model.predict(x=z, u=x)
+        # return self.dt * torch.sum(self.coefs[:, 0] + z * self.coefs[:, 1: -1] + self.coefs[:, -1] * x, dim=1)
+        zx = torch.cat((self.one, z, x.reshape(self.K, 1)), dim=1)
+        return self.dt * zx @ self.coefs
 
-    def forward(self, z, x, dt=0.001):
+    def forward(self, z, x):
         k1 = self._rhs_Z_dt(z, x)
-        k2 = self._rhs_Z_dt(z + .5 * dt * k1, x)
-        k3 = self._rhs_Z_dt(z + .5 * dt * k2, x)
-        k4 = self._rhs_Z_dt(z + dt * k3, x)
+        k2 = self._rhs_Z_dt(z + k1 / 2, x)
+        k3 = self._rhs_Z_dt(z + k2 / 2, x)
+        k4 = self._rhs_Z_dt(z + k3, x)
 
-        return z + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
+        return z + (1 /6) * (k1 + 2*k2 + 2*k3 + k4)
 
 
 def save_model(model, w=0.0):
@@ -293,33 +303,172 @@ def save_model(model, w=0.0):
     save_dir = Path('networks') / model_name / f'input_lagg={model.past_timesteps}'
     if not save_dir.exists(): 
         os.makedirs(save_dir) 
-    torch.save(model, f'{save_dir}/m={model.memory_cutoff}_tau={model.tau}_{model.model_name}_w={w}.pkl')
+    torch.save(model, f'{save_dir}/m={model.memory_cutoff}_tau={model.tau}_{model.model_name}_faster.pkl')
 
 
 # Feature creation
-def generate_data(L96, past_timesteps, BATCH_SIZE=3000, train_share=.8):
+def generate_data(L96, past_timesteps, BATCH_SIZE=3000, train_share=.8, device=device):
     # Get data
-    X = L96.history.X.values.astype(np.float32).T
-    B = L96.history.B.values.astype(np.float32).T
-
-    X = return_lagged_input_vector(X, past_timesteps)
-    X = torch.from_numpy(X.copy())  # Hade some stride problems here, hence the copy workaround
+    X = L96.history.X.values.astype(np.float32)
+    B = L96.history.B.values.astype(np.float32)
     train_ind = int(len(X) * train_share)
     X_train = X[:train_ind]
     X_test = X[train_ind:]
-    X_train = X_train.to(device)
-    X_test = X_test.to(device)
-    print('finished X')
-    
-    B = return_lagged_input_vector(B, past_timesteps)  
-    B = B[:, -1].reshape(-1, 1)  # B is always B(t) -> past_timesteps = x but only the last value is taken
-    B = torch.from_numpy(B)
     B_train = B[:train_ind]
     B_test = B[train_ind:]
-    B_train = B_train.to(device)
-    B_test = B_test.to(device)
+
+    X_train = torch.tensor(return_lagged_input_vector_opt(X_train.T, past_timesteps), dtype=torch.float32, device=device)
+    X_test = torch.tensor(return_lagged_input_vector_opt(X_test.T, past_timesteps), dtype=torch.float32, device=device)
+    B_train = torch.tensor(return_lagged_input_vector_opt(B_train.T, past_timesteps), dtype=torch.float32, device=device)[:,-1].reshape(-1,1)
+    B_test = torch.tensor(return_lagged_input_vector_opt(B_test.T, past_timesteps), dtype=torch.float32, device=device)[:,-1].reshape(-1,1)
 
     return X_train, X_test, B_train, B_test
+
+
+def generate_dataloaders(L96, past_timesteps, batch_size=64, train_share=0.8):
+    X_train, X_test, B_train, B_test = generate_data(L96, past_timesteps, train_share, device='cpu')
+
+    # Create datasets
+    train_dataset = TensorDataset(X_train, B_train)
+    test_dataset = TensorDataset(X_test, B_test)
+
+    # Create dataloaders
+    num_workers = 10
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=True, drop_last=False, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False, drop_last=False, pin_memory=True)
+
+    return train_loader, test_loader
+
+class LaggedTimeSeriesDataset(Dataset):
+    def __init__(self, X, B, past_timesteps):
+        """
+        X: torch.Tensor of shape (NT, num_coords)
+        B: torch.Tensor of shape (NT, num_coords)
+        past_timesteps: int, number of past timesteps per sample
+        """
+        self.X = X
+        self.B = B
+        self.past_timesteps = past_timesteps
+        self.NT, self.num_coords = X.shape
+        print(self.NT, self.num_coords)
+        self.num_samples = self.NT - past_timesteps  # include present
+
+    def __len__(self):
+        return self.num_coords * (self.NT - self.past_timesteps)
+
+    def __getitem__(self, idx):
+        """
+        Returns:
+            x_window: shape (past_timesteps,)
+            b_target: scalar
+        """
+        coord = idx // self.num_samples       # which coordinate
+        time_idx = idx % self.num_samples     # which time step
+
+        x_window = self.X[time_idx:time_idx+self.past_timesteps + 1, coord]
+        b_target = torch.tensor([self.B[time_idx+self.past_timesteps, coord]])  # present value
+
+        return x_window, b_target
+
+class TimeSeriesDataset(Dataset):
+    def __init__(self, X, B, past_timesteps, time_series_length):
+        """
+        X: torch.Tensor of shape (NT, num_coords)
+        B: torch.Tensor of shape (NT, num_coords)
+        past_timesteps: int, number of past timesteps per sample
+        """
+        self.X = X
+        self.B = B
+        self.past_timesteps = past_timesteps
+        self.NT, self.num_coords = X.shape
+        self.time_series_length = time_series_length
+        self.num_samples = int((self.NT - self.past_timesteps) / self.time_series_length)  # include present
+        print((self.NT - self.past_timesteps) / self.time_series_length)
+
+    def __len__(self):
+        return self.num_coords * self.num_samples
+
+    def __getitem__(self, idx):
+        """
+        Returns:
+            x_window: shape (time_series_length + past_timesteps,)
+            b_target: scalar
+        """
+        coord = idx // self.num_samples       # which coordinate
+        time_idx = idx % self.num_samples     # which time step
+
+
+        tstart =  time_idx * self.time_series_length 
+        tend = tstart + self.time_series_length + self.past_timesteps
+        x_window = self.X[tstart: tend, coord]
+        b_target = self.B[tstart: tend, coord]  # present value
+
+        return x_window, b_target
+
+
+def generate_simple_dataloaders(L96, past_timesteps, time_series_length=10_000, train_share=.8, batch_size=64):
+    X = L96.history.X.values.astype(np.float32)
+    B = L96.history.B.values.astype(np.float32)
+    train_ind = int(len(X) * train_share)
+    X_train = torch.tensor(X[:train_ind], dtype=torch.float32)
+    X_test = torch.tensor(X[train_ind:], dtype=torch.float32)
+    B_train = torch.tensor(B[:train_ind], dtype=torch.float32)
+    B_test = torch.tensor(B[train_ind:], dtype=torch.float32)
+
+    # Create datasets
+    # train_dataset = LaggedTimeSeriesDataset(X_train, B_train, past_timesteps)
+    # test_dataset = LaggedTimeSeriesDataset(X_test, B_test, past_timesteps)
+    train_dataset = TimeSeriesDataset(X_train, B_train, past_timesteps, time_series_length=time_series_length)
+    test_dataset = TimeSeriesDataset(X_test, B_test, past_timesteps, time_series_length=time_series_length)
+
+    # Create dataloaders
+    num_workers = 1
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=True, drop_last=False, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False, drop_last=False, pin_memory=True)
+
+    return train_loader, test_loader
+
+
+def create_train_test_loaders(X, B, past_timesteps, train_share=0.8, batch_size=1024, num_workers=4):
+    """
+    X, B: torch.Tensors of shape (num_coords, NT)
+    past_timesteps: int
+    train_share: fraction of data used for training along the time axis
+    batch_size: DataLoader batch size
+    num_workers: DataLoader workers
+    """
+
+    num_coords, NT = X.shape
+    train_end = int(NT * train_share)
+
+    # Split along time axis
+    X_train = X[:, :train_end]
+    B_train = B[:, :train_end]
+    X_test = X[:, train_end:]
+    B_test = B[:, train_end:]
+
+    # Create datasets
+    train_dataset = LaggedTimeSeriesDataset(X_train, B_train, past_timesteps)
+    test_dataset = LaggedTimeSeriesDataset(X_test, B_test, past_timesteps)
+
+    # Create dataloaders
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True
+    )
+
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True
+    )
+
+    return train_loader, test_loader
 
 
 # Model training
@@ -380,62 +529,133 @@ def train_model(x, x_test, b, b_test, model, num_epochs=5, weight_decay=0.0):
     return model
 
 
-def train_model_NNpAEpD(x, x_test, b, b_test, model, num_epochs=5, weight_decay=0.0):
-    # Send to gpu if available
+def train_model_NNpAEpD_simple_dataloader(train_loader, test_loader, model, past_timesteps, num_epochs=5, weight_decay=0.0):
     model = model.to(device)
-
     criterion = nn.MSELoss()
     reconstruction_criterion = nn.MSELoss()
-    lr = .007
-    alpha = .5  # weigth of param loss, reconstruct loss will be 1-alpha
+    lr = 0.007
+    alpha = 0.5
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
 
-    # Make progress bar
     best_R2 = float('-inf')
     best_R2_epoch = 0
     pbar = trange(num_epochs, desc="Training", ncols=150)
 
     for epoch in pbar:
         model.train()
-        test_loss, train_loss, R2 = 0, 0, 0
+        total_train_loss = 0.0
 
-        # Transpose 1-dimensional data
-        xT, bT = transpose_if_1d(x), transpose_if_1d(b)
-        b_pred, x_recon = model.forward(xT)
-        loss = alpha * criterion(b_pred, bT) + (1-alpha) * reconstruction_criterion(x_recon, xT[:,:-1])
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        train_loss += loss.item()
-        
+        # Iterate over batches
+        for x_batch, b_batch in train_loader:
+            x_batch, b_batch = x_batch.to(device), b_batch.to(device)
+            # Preprocessing
+            x_batch = x_batch.unfold(1, past_timesteps + 1, 1).reshape(-1, past_timesteps + 1)  # create lagged time series on gpu
+            b_batch = b_batch[:, past_timesteps:].reshape(-1, 1)
+    
+            b_pred, x_recon = model(x_batch)
+            loss = alpha * criterion(b_pred, b_batch) + (1 - alpha) * reconstruction_criterion(x_recon, x_batch[:, :-1])
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            total_train_loss += loss.item()
+
+        # Validation
         model.eval()
+        total_test_loss = 0.0
+        total_R2 = 0.0
         with torch.no_grad():
-            # Transpose 1-dimensional test data
-            xT, bT = transpose_if_1d(x_test), transpose_if_1d(b_test)
-            b_pred, x_recon = model.forward(xT)
-            loss = alpha * criterion(b_pred, bT) + (1 - alpha) * reconstruction_criterion(x_recon, xT[:,:-1])
-            test_loss += loss.item()
-            R2 += R2Score().to(device)(b_pred, bT)
-        
-        train_loss = train_loss #/ len(dataloader_train)
-        test_loss = test_loss #/ len(dataloader_test)
-        model.train_loss.append(train_loss)
-        model.test_loss.append(test_loss)
-        R2 = R2 #/ len(dataloader_test)
-        model.R2.append(R2)
+            for x_batch, b_batch in test_loader:
+                x_batch, b_batch = x_batch.to(device), b_batch.to(device)
+                # Preprocessing
+                x_batch = x_batch.unfold(1, past_timesteps + 1, 1).reshape(-1, past_timesteps + 1)  # create lagged time series on gpu
+                b_batch = b_batch[:, past_timesteps:].reshape(-1, 1)
+                
+                b_pred, x_recon = model(x_batch)
+                loss = alpha * criterion(b_pred, b_batch) + (1 - alpha) * reconstruction_criterion(x_recon, x_batch[:, :-1])
+                total_test_loss += loss.item()
+                total_R2 += R2Score().to(device)(b_pred, b_batch)
 
-        # Update best R²
-        if R2 > best_R2:
-            best_R2 = R2
+        avg_train_loss = total_train_loss / len(train_loader)
+        avg_test_loss = total_test_loss / len(test_loader)
+        avg_R2 = total_R2 / len(test_loader)
+
+        model.train_loss.append(avg_train_loss)
+        model.test_loss.append(avg_test_loss)
+        model.R2.append(avg_R2)
+
+        if avg_R2 > best_R2:
+            best_R2 = avg_R2
             best_R2_epoch = epoch + 1
 
-        # Inline update
         pbar.set_postfix({
-            "Train Loss": f"{train_loss:.4f}",
-            "Test Loss": f"{test_loss:.4f}",
-            "R²": f"{R2:.4f}",
+            "Train Loss": f"{avg_train_loss:.4f}",
+            "Test Loss": f"{avg_test_loss:.4f}",
+            "R²": f"{avg_R2:.4f}",
             "Best R²": f"{best_R2:.4f} @ {best_R2_epoch}"})
+
+    return model
+
+
+def train_model_NNpAEpD_dataloader(train_loader, test_loader, model, num_epochs=5, weight_decay=0.0):
+    model = model.to(device)
+    criterion = nn.MSELoss()
+    reconstruction_criterion = nn.MSELoss()
+    lr = 0.007
+    alpha = 0.5
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+
+    best_R2 = float('-inf')
+    best_R2_epoch = 0
+    pbar = trange(num_epochs, desc="Training", ncols=150)
+
+    for epoch in pbar:
+        model.train()
+        total_train_loss = 0.0
+
+        # Iterate over batches
+        for x_batch, b_batch in train_loader:
+            x_batch, b_batch = x_batch.to(device, non_blocking=True), b_batch.to(device, non_blocking=True)
     
+            b_pred, x_recon = model(x_batch)
+            loss = alpha * criterion(b_pred, b_batch) + (1 - alpha) * reconstruction_criterion(x_recon, x_batch[:, :-1])
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            total_train_loss += loss.item()
+
+        # Validation
+        model.eval()
+        total_test_loss = 0.0
+        total_R2 = 0.0
+        with torch.no_grad():
+            for x_batch, b_batch in test_loader:
+                x_batch, b_batch = x_batch.to(device, non_blocking=True), b_batch.to(device, non_blocking=True)
+
+                b_pred, x_recon = model(x_batch)
+                loss = alpha * criterion(b_pred, b_batch) + (1 - alpha) * reconstruction_criterion(x_recon, x_batch[:, :-1])
+                total_test_loss += loss.item()
+                total_R2 += R2Score().to(device)(b_pred, b_batch)
+
+        avg_train_loss = total_train_loss / len(train_loader)
+        avg_test_loss = total_test_loss / len(test_loader)
+        avg_R2 = total_R2 / len(test_loader)
+
+        model.train_loss.append(avg_train_loss)
+        model.test_loss.append(avg_test_loss)
+        model.R2.append(avg_R2)
+
+        if avg_R2 > best_R2:
+            best_R2 = avg_R2
+            best_R2_epoch = epoch + 1
+
+        pbar.set_postfix({
+            "Train Loss": f"{avg_train_loss:.4f}",
+            "Test Loss": f"{avg_test_loss:.4f}",
+            "R²": f"{avg_R2:.4f}",
+            "Best R²": f"{best_R2:.4f} @ {best_R2_epoch}"})
+
     return model
 
 
@@ -760,49 +980,42 @@ if __name__=='__main__':
     #sensitivity_experiment(args.past_timesteps, models=[args.model_type], latent_dims=None)
     #sensitivity_experiment(1000, ['NN+AE'], latent_dims=1)
 
-    m, tau = 0.001, 0.001
-    with open(f'online_runs/NO_PARAMETRIZATION/time=10000000_m={m}_tau={tau}.pkl', 'rb') as file:
-        L96 = pickle.load(file)
 
-    X = L96.history.X.values
-    B = L96.history.B.values
-    X = X[:600_000]
-    B = B[:600_000]
+    # m, tau = 0.001, 0.001
+    # past_timesteps = 1000    
+    # with open(f'online_runs/NO_PARAMETRIZATION/time=10000000_m={m}_tau={tau}.pkl', 'rb') as file:
+    #     L96 = pickle.load(file)
+    # L96_subset = L962LvlMem(m=m, tau=tau)
+    # L96_subset._history_X = L96._history_X[:500_000]
+    # L96_subset._history_B = L96._history_B[:500_000]
+    # L96 = L96_subset
 
-    Ntrain = int(X.shape[0] * .8)
-    def train_test_split(arr, Ntrain):
-        return arr[:Ntrain], arr[Ntrain:]
+    # with open(f'online_runs/NO_PARAMETRIZATION/time=1000MTU_m={m}_tau={tau}.pkl', 'rb') as file:
+    #     L96 = pickle.load(file)
 
-    X_train, X_test = train_test_split(X, Ntrain)
-    B_train, B_test = train_test_split(B, Ntrain)
+    # train_loader, test_loader = generate_simple_dataloaders(L96, past_timesteps, time_series_length=10_000, batch_size=10)
+    # for w in [1.e-3]:
+    #     print(w)
+    #     model = NNpAEpD(n_neighbours=1, past_timesteps=past_timesteps, latent_dims=8)
+    #     model.memory_cutoff = m
+    #     model.tau = tau
+    #     model = train_model_NNpAEpD_simple_dataloader(train_loader, test_loader, model, past_timesteps, num_epochs=100, weight_decay=w)
+    #     save_model(model, w=w)
 
-    past_timesteps = 1000
-
-    X_train = torch.tensor(return_lagged_input_vector_opt(X_train.T, past_timesteps), dtype=torch.float32, device=device)
-    X_test = torch.tensor(return_lagged_input_vector_opt(X_test.T, past_timesteps), dtype=torch.float32, device=device)
-    B_train = torch.tensor(return_lagged_input_vector_opt(B_train.T, past_timesteps), dtype=torch.float32, device=device)[:,-1].reshape(-1,1)
-    B_test = torch.tensor(return_lagged_input_vector_opt(B_test.T, past_timesteps), dtype=torch.float32, device=device)[:,-1].reshape(-1,1)
-
-    for w in [1.e-3]:
-        print(w)
-        model = NNpAEpD(n_neighbours=1, past_timesteps=past_timesteps, latent_dims=8)
-        #model = NNpAE(past_timesteps=past_timesteps, latent_dims=8)
-        model.memory_cutoff = m
-        model.tau = tau
-        model = train_model_NNpAEpD(X_train, X_test, B_train, B_test, model, num_epochs=2000, weight_decay=w)
-        #model = train_model(X_train, X_test, B_train, B_test, model, num_epochs=2000, weight_decay=w)
-        save_model(model, w=w)
-
-    # path_ODE = '/work/bd1179/b309297/ODE_discovery/ODEs/dim=8_deg=1_lambda=0.0_finitedifference.pkl'
-    # path_NN = 'networks/NN+ODE/input_lagg=1000/m=0.001_tau=0.001_NN+ODE.pkl'
-    # path_AE = 'networks/NN+AE+D/input_lagg=1000/m=0.001_tau=0.001_NN+AE+D_w=0.001.pkl'
-    # ode = ODE_Z(path_ODE, path_AE, path_NN, model_name='ODE_Z_online', latent_dims=8, past_timesteps=1000)
-    # save_model(ode)
+    path_ODE = 'ODEs/dim=8_deg=1_lambda=0.0_finitedifference_more_data.npy'
+    path_NN = 'networks/NN+ODE/input_lagg=1000/m=0.001_tau=0.001_NN+ODE_faster.pkl'
+    path_AE = 'networks/NN+AE+D/input_lagg=1000/m=0.001_tau=0.001_NN+AE+D_w=0.001_for_ODE_more_data.pkl'
+    ode = ODE_Z(path_ODE, path_AE, path_NN, model_name='ODE_Z_online', K=8, latent_dims=8, past_timesteps=1000, dt=0.001)
+    save_model(ode)
 
 
     #create_latent_space_trainig_data(m=.001, tau=.001, past_timesteps=1000, latent_dims=5, num_samples=1_000)
     # create_latent_space_trainig_data_multi_trajectory(m=.001, tau=.001, past_timesteps=1000, latent_dims=1)
 
+    # train_loader, test_loader = generate_simple_dataloaders(L96, past_timesteps, batch_size=10_000)
+    # X, B = torch.tensor(L96.history.X.values.T, dtype=torch.float32), torch.tensor(L96.history.B.values.T, dtype=torch.float32)
+    # train_loader, test_loader = create_train_test_loaders(X, B, past_timesteps, train_share=0.8, batch_size=4096, num_workers=0
+    # model = train_model_NNpAEpD_simple_dataloader(train_loader, test_loader, model, past_timesteps, num_epochs=30, weight_decay=w)
 
     # Data
     '''

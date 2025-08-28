@@ -35,6 +35,8 @@ class L962LvlMem(object):
         # Initialize state variables
         self.X = np.random.rand(self.K) if X_init is None else X_init.copy()
         self.Y = np.zeros(self.K * self.J) if Y_init is None else Y_init.copy()
+        self.X = self.X.astype(np.float32)
+        self.Y = self.Y.astype(np.float32)
         if hasattr(self.parametrization, 'latent_dims'):
             self.Z = np.zeros((self.K, self.parametrization.latent_dims))  # Z0 = 0
             self.Z_ODE = np.zeros((self.K, self.parametrization.latent_dims))  # Z_ODE0 = 0
@@ -190,20 +192,21 @@ class L962LvlMem(object):
                     x_past = x[:, :-1]
                     x_present = torch.unsqueeze(x[:, -1], 1)
                     self.Z = self.parametrization.AE.encoder(x_past)
-                    self.Z_ODE = self.Z.numpy().copy()
+                    self.Z_ODE = self.Z#.numpy().copy()
                     self.step()  # do unparametrized step
                     return  # return, otherwise two RK steps will be made for X
                 else:
                     if 'online' in self.parametrization.model_name:
-                        self.Z = self.parametrization.forward(self.Z, self.X, self.dt)  # Predict Z derivatives and integrate using RK4
-                        self.Z = torch.from_numpy(self.Z.astype(np.float32))
-                        x_present = torch.from_numpy(self.X.astype(np.float32),).reshape(-1, 1)
+                        x_present = torch.from_numpy(self.X)
+                        self.Z = self.parametrization.forward(self.Z, x_present)  # Predict Z derivatives and integrate using RK4
+                        # self.Z = torch.from_numpy(self.Z.astype(np.float32))
+                        x_present = x_present.reshape(-1, 1)
                         x_nn = torch.cat((self.Z, x_present), dim=1)
                         # with torch.no_grad():
                         B = self.parametrization.NN.forward(x_nn).numpy().flatten()
                     else:
                         # Compute Z_ODE allongside Z from the AE, but dont use it for the parametrization
-                        self.Z_ODE = self.parametrization.forward(self.Z_ODE, self.X, self.dt)  # Predict Z derivatives and integrate using RK4
+                        self.Z_ODE = self.parametrization.forward(self.Z_ODE, torch.from_numpy(self.X))  # Predict Z derivatives and integrate using RK4
                         x = np.array(self.param_memory_X).astype(np.float32).T
                         x = torch.from_numpy(x)
                         x_past = x[:, :-1]
@@ -301,6 +304,60 @@ def save_L96(L96):
     
     with open(save_path, 'wb') as file:
         pickle.dump(L96, file)
+
+
+class NNpAE(nn.Module):
+    def __init__(self, past_timesteps, latent_dims, nodes_per_layer=16):
+        super().__init__()
+
+        self.past_timesteps = past_timesteps
+        self.latent_dims = latent_dims
+        self.nodes_per_layer = nodes_per_layer
+
+        self.encoder = nn.Sequential(
+            nn.Linear(self.past_timesteps, 32),
+            nn.ReLU(),
+            nn.Linear(32, 16),
+            nn.ReLU(),
+            nn.Linear(16, 12),
+            nn.ReLU(),
+            nn.Linear(12, self.latent_dims)
+        )
+        self.neural_net = nn.Sequential(
+            nn.Linear(latent_dims + 1, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, 1)
+        )
+
+        # Loss
+        self.train_loss = []
+        self.test_loss = []
+
+        # R^2
+        self.R2 = []
+
+        # Metadata
+        self.memory_cutoff = None
+        self.tau = None
+        self.model_name = 'NN+AE'
+
+    def forward(self, x):
+        x_past = x[:, :-1]
+        x_present = torch.unsqueeze(x[:, -1], 1)
+        # x_present = x[:, -1]
+
+        latent_space = self.encoder(x_past)
+        x_nn = torch.cat((latent_space, x_present), dim=1)
+        y_pred = self.neural_net(x_nn)
+        return y_pred
 
 
 class NNpAEpD(nn.Module):
@@ -409,13 +466,15 @@ class NN(nn.Module):
 
 
 class ODE_Z:
-    def __init__(self, path_ODE, path_AE, path_NN, model_name='ODE_Z', latent_dims=8, past_timesteps=1000, m=0.001, tau=0.001):
+    def __init__(self, path_ODE, path_AE, path_NN, model_name='ODE_Z', latent_dims=8, K=8, past_timesteps=1000, m=0.001, tau=0.001, dt=0.001):
         '''
         This class is a wrapper that allows the interplay between the existing L96 implementation and a fitted pysindy model
         path: Path to pysindy model
         '''
         with open(path_ODE, 'rb') as file:
-            self.model = pickle.load(file)
+            # self.model = pickle.load(file)
+            self.coefs = np.load(file)
+            self.coefs = torch.tensor(self.coefs, dtype=torch.float32).T  
         
         with open(path_AE, 'rb') as file:
             self.AE = torch.load(file, map_location='cpu', weights_only=False)
@@ -428,17 +487,23 @@ class ODE_Z:
         self.past_timesteps = past_timesteps
         self.memory_cutoff = m
         self.tau = tau
+        self.dt = torch.tensor(dt, dtype=torch.float32)
+        self.K = K
+        self.one = torch.ones((self.K, 1), dtype=torch.float32)
 
     def _rhs_Z_dt(self, z, x):
-        return self.model.predict(x=z, u=x)
+        # return self.model.predict(x=z, u=x)
+        # return self.dt * torch.sum(self.coefs[:, 0] + z * self.coefs[:, 1: -1] + self.coefs[:, -1] * x, dim=1)
+        zx = torch.cat((self.one, z, x.reshape(self.K, 1)), dim=1)
+        return self.dt * zx @ self.coefs
 
-    def forward(self, z, x, dt=0.001):
+    def forward(self, z, x):
         k1 = self._rhs_Z_dt(z, x)
-        k2 = self._rhs_Z_dt(z + .5 * dt * k1, x)
-        k3 = self._rhs_Z_dt(z + .5 * dt * k2, x)
-        k4 = self._rhs_Z_dt(z + dt * k3, x)
+        k2 = self._rhs_Z_dt(z + k1 / 2, x)
+        k3 = self._rhs_Z_dt(z + k2 / 2, x)
+        k4 = self._rhs_Z_dt(z + k3, x)
 
-        return z + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
+        return z + (1 /6) * (k1 + 2*k2 + 2*k3 + k4)
 
 
 def run_online(ms, taus, models, past_timesteps, simulation_time=1000):
@@ -465,7 +530,7 @@ def run_online(ms, taus, models, past_timesteps, simulation_time=1000):
                 mn = model
             
             print(m, tau)
-            path = f'networks/{model}/input_lagg={pt}/m={m}_tau={tau}_{mn}_w=0.001.pkl'
+            path = f'networks/{model}/input_lagg={pt}/m={m}_tau={tau}_{mn}_faster.pkl'
             parametrization = torch.load(path, weights_only=False, map_location='cpu')
             print(path)
             parametrization.model_name = model
@@ -483,7 +548,7 @@ def run_online(ms, taus, models, past_timesteps, simulation_time=1000):
 
             # Save run
             save_dir = Path(f'./online_runs/{model}/input_lagg={pt}')
-            save_path = f'{save_dir}/time={simulation_time}MTU_m={m}_tau={tau}_w=0.001.nc'
+            save_path = f'{save_dir}/time={simulation_time}MTU_m={m}_tau={tau}.nc'
             if not save_dir.exists(): 
                 os.makedirs(save_dir) 
             #h.to_netcdf(f'./online_runs/{model}/input_lagg={pt}/time={simulation_time}MTU_m={m}_tau={tau}.nc', mode='w')
@@ -505,16 +570,7 @@ def run_NNpAE_online(model_path, sim_time=10_000):
     save_L96(L96)
 
 
-def load_equation_models(dim):
-    path_dict = {0:'outputs/20250704_120045_4bP2CT/checkpoint.pkl', 1: 'outputs/20250704_120106_netRvS/checkpoint.pkl', 2: 'outputs/20250704_120117_92TOuO/checkpoint.pkl'}
-    #path = f'equations/latent_variabel={dim}_3dim_3d_training.csv'
-    #path = 'outputs/20250703_144254_GtkNcN/checkpoint.pkl'
-    path = path_dict[dim]
-    with open(path, 'rb') as file:
-        model = pickle.load(file)
-    model.equations_ = model.get_hof()  # I lost the equations_ df at some point, luckily I can reconstruct them
 
-    return model
 
 
 if __name__=='__main__':
@@ -562,7 +618,8 @@ if __name__=='__main__':
     #path = 'networks/phi_0_0.0_8_m=None_tau=None_20250717112413.pkl'  # Phi_0,0,8
     #print(path)
     #run_NNpAE_online(path)
-    run_online([0.001], [0.001], ['NN+AE+D'], past_timesteps=1000, simulation_time=1000)
+    # run_online([0.001], [0.001], ['NN+AE+D'], past_timesteps=1000, simulation_time=10_000)
+    run_online([0.001], [0.001], ['ODE_Z_online'], past_timesteps=1000, simulation_time=10_000)
 
 
     # initX = np.load('initX.npy')[:8]

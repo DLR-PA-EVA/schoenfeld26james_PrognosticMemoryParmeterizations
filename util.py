@@ -89,6 +89,46 @@ def return_lagged_input_vector_opt(X, m):
     return out
 
 
+def create_lagged_features_strided(x, past_timesteps):
+    """
+    Faster version using torch.as_strided (no Python loop)
+    x: (features, timesteps)
+    """
+    features, total_steps = x.shape
+    num_samples = total_steps - past_timesteps + 1
+
+    # stride along the time dimension
+    strides = x.stride()
+    lagged = x.as_strided(
+        size=(num_samples, features, past_timesteps),
+        stride=(strides[1], strides[0], strides[1])
+    )
+    return lagged.reshape(num_samples, -1)  # flatten last two dims
+
+
+def create_lagged_features(x, past_timesteps):
+    """
+    x: tensor of shape (num_coords, NT)
+    past_timesteps: number of past timesteps per input
+    Returns:
+        X_lagged: (num_coords*(NT-past_timesteps), past_timesteps)
+        coordinate_ids: (num_coords*(NT-past_timesteps))  # optional, if needed
+    """
+    num_coords, NT = x.shape
+    num_samples = NT - past_timesteps
+
+    X_lagged = []
+    for c in range(num_coords):
+        # shape: (num_samples, past_timesteps)
+        lagged = x[c, :].unfold(0, past_timesteps, 1)  # sliding window
+        X_lagged.append(lagged)
+
+    # stack all coordinates
+    X_lagged = torch.cat(X_lagged, dim=0)  # shape: (num_coords*num_samples, past_timesteps)
+
+    return X_lagged
+
+
 def return_lagged_input_vector_and_present_k_old(X, m):
     """
     Constructs lagged input vectors with row order grouped by feature.
