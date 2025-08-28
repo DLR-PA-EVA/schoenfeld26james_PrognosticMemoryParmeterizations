@@ -7,6 +7,7 @@ import os
 import pickle
 import torch
 import torch.nn as nn
+from parametrizations import NN, NNpAE, NNpAEpD, NNpODE, FCNN, ODE_Z
 
 # Set device to gpu if avaible, else to cpu
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -306,206 +307,6 @@ def save_L96(L96):
         pickle.dump(L96, file)
 
 
-class NNpAE(nn.Module):
-    def __init__(self, past_timesteps, latent_dims, nodes_per_layer=16):
-        super().__init__()
-
-        self.past_timesteps = past_timesteps
-        self.latent_dims = latent_dims
-        self.nodes_per_layer = nodes_per_layer
-
-        self.encoder = nn.Sequential(
-            nn.Linear(self.past_timesteps, 32),
-            nn.ReLU(),
-            nn.Linear(32, 16),
-            nn.ReLU(),
-            nn.Linear(16, 12),
-            nn.ReLU(),
-            nn.Linear(12, self.latent_dims)
-        )
-        self.neural_net = nn.Sequential(
-            nn.Linear(latent_dims + 1, self.nodes_per_layer),
-            nn.ReLU(),
-            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
-            nn.ReLU(),
-            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
-            nn.ReLU(),
-            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
-            nn.ReLU(),
-            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
-            nn.ReLU(),
-            nn.Linear(self.nodes_per_layer, 1)
-        )
-
-        # Loss
-        self.train_loss = []
-        self.test_loss = []
-
-        # R^2
-        self.R2 = []
-
-        # Metadata
-        self.memory_cutoff = None
-        self.tau = None
-        self.model_name = 'NN+AE'
-
-    def forward(self, x):
-        x_past = x[:, :-1]
-        x_present = torch.unsqueeze(x[:, -1], 1)
-        # x_present = x[:, -1]
-
-        latent_space = self.encoder(x_past)
-        x_nn = torch.cat((latent_space, x_present), dim=1)
-        y_pred = self.neural_net(x_nn)
-        return y_pred
-
-
-class NNpAEpD(nn.Module):
-    def __init__(self, past_timesteps, n_neighbours, latent_dims, nodes_per_layer=16):
-        super().__init__()
-
-        self.past_timesteps = past_timesteps
-        self.n_neighbours = n_neighbours
-        self.latent_dims = latent_dims
-        self.nodes_per_layer = nodes_per_layer
-
-        self.encoder = nn.Sequential(
-            nn.Linear(self.past_timesteps, 32),
-            nn.ReLU(),
-            nn.Linear(32, 16),
-            nn.ReLU(),
-            nn.Linear(16, 12),
-            nn.ReLU(),
-            nn.Linear(12, self.latent_dims)
-        )
-
-        self.decoder = nn.Sequential(
-            nn.Linear(latent_dims, 12),
-            nn.ReLU(),
-            nn.Linear(12, 16),
-            nn.ReLU(),
-            nn.Linear(16, 32),
-            nn.ReLU(),
-            nn.Linear(32, past_timesteps)
-        )
-
-        self.neural_net = nn.Sequential(
-            nn.Linear(latent_dims + n_neighbours, self.nodes_per_layer),
-            nn.ReLU(),
-            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
-            nn.ReLU(),
-            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
-            nn.ReLU(),
-            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
-            nn.ReLU(),
-            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
-            nn.ReLU(),
-            nn.Linear(self.nodes_per_layer, 1)
-        )
-
-        # Loss
-        self.train_loss = []
-        self.test_loss = []
-
-        # R^2
-        self.R2 = []
-
-        # Metadata
-        self.memory_cutoff = None
-        self.tau = None
-        self.model_name = 'NN+AE+D'
-
-    def forward(self, x):
-        x_past = x[:, :self.past_timesteps]
-        x_present = x[:, self.past_timesteps:]
-        latent_space = self.encoder(x_past)
-        x_reconstructed = self.decoder(latent_space)
-        x_nn = torch.cat((latent_space, x_present), dim=1)
-        y_pred = self.neural_net(x_nn)
-        
-        return y_pred, x_reconstructed
-
-
-class NN(nn.Module):
-    def __init__(self,past_timesteps, n_neighbours, nodes_per_layer=16):
-        super().__init__()
-        self.past_timesteps = past_timesteps
-        self.n_neighbours = n_neighbours
-        self.nodes_per_layer = nodes_per_layer
-
-        self.neural_net = nn.Sequential(
-            nn.Linear(self.past_timesteps + self.n_neighbours, self.nodes_per_layer),
-            nn.ReLU(),
-            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
-            nn.ReLU(),
-            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
-            nn.ReLU(),
-            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
-            nn.ReLU(),
-            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
-            nn.ReLU(),
-            nn.Linear(self.nodes_per_layer, 1)
-        )
-
-        # Loss
-        self.train_loss = []
-        self.test_loss = []
-
-        # R^2
-        self.R2 = []
-
-        # Metadata
-        self.memory_cutoff = None
-        self.tau = None
-        self.model_name = 'NN'
-        self.latent_dims = 0
-
-    def forward(self, x):
-        y_pred = self.neural_net(x)
-        return y_pred
-
-
-class ODE_Z:
-    def __init__(self, path_ODE, path_AE, path_NN, model_name='ODE_Z', latent_dims=8, K=8, past_timesteps=1000, m=0.001, tau=0.001, dt=0.001):
-        '''
-        This class is a wrapper that allows the interplay between the existing L96 implementation and a fitted pysindy model
-        path: Path to pysindy model
-        '''
-        with open(path_ODE, 'rb') as file:
-            # self.model = pickle.load(file)
-            self.coefs = np.load(file)
-            self.coefs = torch.tensor(self.coefs, dtype=torch.float32).T  
-        
-        with open(path_AE, 'rb') as file:
-            self.AE = torch.load(file, map_location='cpu', weights_only=False)
-        
-        with open(path_NN, 'rb') as file:
-            self.NN = torch.load(file, map_location='cpu', weights_only=False)
-    
-        self.model_name = model_name
-        self.latent_dims = latent_dims
-        self.past_timesteps = past_timesteps
-        self.memory_cutoff = m
-        self.tau = tau
-        self.dt = torch.tensor(dt, dtype=torch.float32)
-        self.K = K
-        self.one = torch.ones((self.K, 1), dtype=torch.float32)
-
-    def _rhs_Z_dt(self, z, x):
-        # return self.model.predict(x=z, u=x)
-        # return self.dt * torch.sum(self.coefs[:, 0] + z * self.coefs[:, 1: -1] + self.coefs[:, -1] * x, dim=1)
-        zx = torch.cat((self.one, z, x.reshape(self.K, 1)), dim=1)
-        return self.dt * zx @ self.coefs
-
-    def forward(self, z, x):
-        k1 = self._rhs_Z_dt(z, x)
-        k2 = self._rhs_Z_dt(z + k1 / 2, x)
-        k3 = self._rhs_Z_dt(z + k2 / 2, x)
-        k4 = self._rhs_Z_dt(z + k3, x)
-
-        return z + (1 /6) * (k1 + 2*k2 + 2*k3 + k4)
-
-
 def run_online(ms, taus, models, past_timesteps, simulation_time=1000):
     initX = np.load('initX.npy')[:8]
     initY = np.load('initY.npy')[:8*32]
@@ -570,7 +371,36 @@ def run_NNpAE_online(model_path, sim_time=10_000):
     save_L96(L96)
 
 
+def L96_pickle_to_nc(path):
+    with open(path, 'rb') as file:
+        L96 = pickle.load(file)
+    
+    h = L96.history
+    m, tau = L96.m, L96.tau
+    h.attrs['m'] = L96.m
+    h.attrs['tau'] = L96.tau
+    if L96.parametrization:
+        model = L96.parametrization.model_name
+        h.attrs['model'] = model
+    else:
+        model = 'NO_PARAMETRIZATION'
+        h.attrs['model'] = model
 
+    pt = L96.parametrization.past_timesteps if L96.parametrization is not None else 0
+    h.attrs['past_timesteps'] = pt
+    h.attrs['model_path'] = path
+    if hasattr(L96.parametrization, 'latent_dims') and L96.parametrization.latent_dims is None:
+        L96.parametrization.latent_dims = 0
+    h.attrs['latent_dims'] = L96.parametrization.latent_dims if hasattr(L96.parametrization, 'latent_dims') else 0
+    simulation_time = int(h.X.values.shape[0] * .001)
+
+    # Save run
+    save_dir = Path(f'./online_runs/{model}/input_lagg={pt}')
+    save_path = f'{save_dir}/time={simulation_time}MTU_m={m}_tau={tau}.nc'
+    if not save_dir.exists(): 
+        os.makedirs(save_dir) 
+    #h.to_netcdf(f'./online_runs/{model}/input_lagg={pt}/time={simulation_time}MTU_m={m}_tau={tau}.nc', mode='w')
+    h.to_netcdf(save_path, mode='w')
 
 
 if __name__=='__main__':

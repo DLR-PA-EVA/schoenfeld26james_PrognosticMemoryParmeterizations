@@ -2,9 +2,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
-from util import return_lagged_input_vector, transpose_if_1d, return_lagged_input_vector_and_present_k, return_lagged_input_vector_opt, create_lagged_features
+from util import transpose_if_1d, return_lagged_input_vector_and_present_k, return_lagged_input_vector_opt
 from torchmetrics.regression import R2Score
-from L96 import L962LvlMem
+import time
 import os
 from pathlib import Path
 import argparse
@@ -12,6 +12,7 @@ from tqdm import tqdm, trange
 import pickle
 import itertools
 from torch.utils.data import Dataset
+import xarray as xr
 
 
 # Load initial conditions for L96 model
@@ -309,8 +310,8 @@ def save_model(model, w=0.0):
 # Feature creation
 def generate_data(L96, past_timesteps, BATCH_SIZE=3000, train_share=.8, device=device):
     # Get data
-    X = L96.history.X.values.astype(np.float32)
-    B = L96.history.B.values.astype(np.float32)
+    X = L96.X.values.astype(np.float32)
+    B = L96.B.values.astype(np.float32)
     train_ind = int(len(X) * train_share)
     X_train = X[:train_ind]
     X_test = X[train_ind:]
@@ -324,51 +325,6 @@ def generate_data(L96, past_timesteps, BATCH_SIZE=3000, train_share=.8, device=d
 
     return X_train, X_test, B_train, B_test
 
-
-def generate_dataloaders(L96, past_timesteps, batch_size=64, train_share=0.8):
-    X_train, X_test, B_train, B_test = generate_data(L96, past_timesteps, train_share, device='cpu')
-
-    # Create datasets
-    train_dataset = TensorDataset(X_train, B_train)
-    test_dataset = TensorDataset(X_test, B_test)
-
-    # Create dataloaders
-    num_workers = 10
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=True, drop_last=False, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False, drop_last=False, pin_memory=True)
-
-    return train_loader, test_loader
-
-class LaggedTimeSeriesDataset(Dataset):
-    def __init__(self, X, B, past_timesteps):
-        """
-        X: torch.Tensor of shape (NT, num_coords)
-        B: torch.Tensor of shape (NT, num_coords)
-        past_timesteps: int, number of past timesteps per sample
-        """
-        self.X = X
-        self.B = B
-        self.past_timesteps = past_timesteps
-        self.NT, self.num_coords = X.shape
-        print(self.NT, self.num_coords)
-        self.num_samples = self.NT - past_timesteps  # include present
-
-    def __len__(self):
-        return self.num_coords * (self.NT - self.past_timesteps)
-
-    def __getitem__(self, idx):
-        """
-        Returns:
-            x_window: shape (past_timesteps,)
-            b_target: scalar
-        """
-        coord = idx // self.num_samples       # which coordinate
-        time_idx = idx % self.num_samples     # which time step
-
-        x_window = self.X[time_idx:time_idx+self.past_timesteps + 1, coord]
-        b_target = torch.tensor([self.B[time_idx+self.past_timesteps, coord]])  # present value
-
-        return x_window, b_target
 
 class TimeSeriesDataset(Dataset):
     def __init__(self, X, B, past_timesteps, time_series_length):
@@ -407,8 +363,8 @@ class TimeSeriesDataset(Dataset):
 
 
 def generate_simple_dataloaders(L96, past_timesteps, time_series_length=10_000, train_share=.8, batch_size=64):
-    X = L96.history.X.values.astype(np.float32)
-    B = L96.history.B.values.astype(np.float32)
+    X = L96.X.values.astype(np.float32)
+    B = L96.B.values.astype(np.float32)
     train_ind = int(len(X) * train_share)
     X_train = torch.tensor(X[:train_ind], dtype=torch.float32)
     X_test = torch.tensor(X[train_ind:], dtype=torch.float32)
@@ -425,48 +381,6 @@ def generate_simple_dataloaders(L96, past_timesteps, time_series_length=10_000, 
     num_workers = 1
     train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=True, drop_last=False, pin_memory=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False, drop_last=False, pin_memory=True)
-
-    return train_loader, test_loader
-
-
-def create_train_test_loaders(X, B, past_timesteps, train_share=0.8, batch_size=1024, num_workers=4):
-    """
-    X, B: torch.Tensors of shape (num_coords, NT)
-    past_timesteps: int
-    train_share: fraction of data used for training along the time axis
-    batch_size: DataLoader batch size
-    num_workers: DataLoader workers
-    """
-
-    num_coords, NT = X.shape
-    train_end = int(NT * train_share)
-
-    # Split along time axis
-    X_train = X[:, :train_end]
-    B_train = B[:, :train_end]
-    X_test = X[:, train_end:]
-    B_test = B[:, train_end:]
-
-    # Create datasets
-    train_dataset = LaggedTimeSeriesDataset(X_train, B_train, past_timesteps)
-    test_dataset = LaggedTimeSeriesDataset(X_test, B_test, past_timesteps)
-
-    # Create dataloaders
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=True
-    )
-
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True
-    )
 
     return train_loader, test_loader
 
@@ -597,68 +511,6 @@ def train_model_NNpAEpD_simple_dataloader(train_loader, test_loader, model, past
     return model
 
 
-def train_model_NNpAEpD_dataloader(train_loader, test_loader, model, num_epochs=5, weight_decay=0.0):
-    model = model.to(device)
-    criterion = nn.MSELoss()
-    reconstruction_criterion = nn.MSELoss()
-    lr = 0.007
-    alpha = 0.5
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-
-    best_R2 = float('-inf')
-    best_R2_epoch = 0
-    pbar = trange(num_epochs, desc="Training", ncols=150)
-
-    for epoch in pbar:
-        model.train()
-        total_train_loss = 0.0
-
-        # Iterate over batches
-        for x_batch, b_batch in train_loader:
-            x_batch, b_batch = x_batch.to(device, non_blocking=True), b_batch.to(device, non_blocking=True)
-    
-            b_pred, x_recon = model(x_batch)
-            loss = alpha * criterion(b_pred, b_batch) + (1 - alpha) * reconstruction_criterion(x_recon, x_batch[:, :-1])
-
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            total_train_loss += loss.item()
-
-        # Validation
-        model.eval()
-        total_test_loss = 0.0
-        total_R2 = 0.0
-        with torch.no_grad():
-            for x_batch, b_batch in test_loader:
-                x_batch, b_batch = x_batch.to(device, non_blocking=True), b_batch.to(device, non_blocking=True)
-
-                b_pred, x_recon = model(x_batch)
-                loss = alpha * criterion(b_pred, b_batch) + (1 - alpha) * reconstruction_criterion(x_recon, x_batch[:, :-1])
-                total_test_loss += loss.item()
-                total_R2 += R2Score().to(device)(b_pred, b_batch)
-
-        avg_train_loss = total_train_loss / len(train_loader)
-        avg_test_loss = total_test_loss / len(test_loader)
-        avg_R2 = total_R2 / len(test_loader)
-
-        model.train_loss.append(avg_train_loss)
-        model.test_loss.append(avg_test_loss)
-        model.R2.append(avg_R2)
-
-        if avg_R2 > best_R2:
-            best_R2 = avg_R2
-            best_R2_epoch = epoch + 1
-
-        pbar.set_postfix({
-            "Train Loss": f"{avg_train_loss:.4f}",
-            "Test Loss": f"{avg_test_loss:.4f}",
-            "R²": f"{avg_R2:.4f}",
-            "Best R²": f"{best_R2:.4f} @ {best_R2_epoch}"})
-
-    return model
-
-
 def train_model_NN(x, x_test, dZdt, dZdt_test, model, num_epochs=5):
     # Send to gpu if available
     model = model.to(device)
@@ -748,18 +600,12 @@ def sensitivity_experiment(pt, models=['baseline_nn', 'nn', 'NN+AE'], latent_dim
         # L96.iterate(simulation_time)
         files = os.listdir('online_runs/NO_PARAMETRIZATION')
         files.sort()
-        path = f'online_runs/NO_PARAMETRIZATION/' + files[i]
+        path = f'online_runs/NO_PARAMETRIZATION/input_lagg=0/time=10000MTU_m={m}_tau={tau}.nc'
         print(path)
-        i += 1
         with open(path, 'rb') as file:
-                L96 = pickle.load(file)
-        Nt = 700 * 1000 
-
-        L96_subset = L962LvlMem(m=m, tau=tau)
-        L96_subset._history_X = L96._history_X[:Nt]
-        L96_subset._history_B = L96._history_B[:Nt]
-        print(m, tau, L96.m, L96.tau)
-        L96 = L96_subset
+                L96 = xr.open_dataset(file)
+        Nt = 1000 * 1000 
+        L96 = L96.isel(time=slice(0, Nt))
 
         if 'baseline_nn' in models:
             # Train Baseline:
@@ -796,23 +642,6 @@ def sensitivity_experiment(pt, models=['baseline_nn', 'nn', 'NN+AE'], latent_dim
                 nn_model = train_model(X_train, X_test, B_train, B_test, nn_model, num_epochs=num_epochs)
                 nn_model = set_model_metadata(nn_model, past_timesteps, latent_dims=None, model_name='nn', m=m, tau=tau)
                 save_model(nn_model)
-
-            if ('autoencoder' in models) or ('nn+autoencoder' in models):
-                # Train NN+AE
-                print('NN+AE')
-                # AE
-                X_train, X_test = generate_data_autoencoder(L96, past_timesteps=past_timesteps)
-                ae_model = Autoencoder(past_timesteps=past_timesteps, latent_dims=latent_dims)
-                ae_model = train_model(X_train, X_test, X_train, X_test, ae_model, num_epochs=num_epochs)
-                ae_model = set_model_metadata(ae_model, past_timesteps, latent_dims=None, model_name='autoencoder', m=m, tau=tau)
-                save_model(ae_model)
-
-                # NN
-                X_train, X_test, B_train, B_test = generate_data_nn_autoencoder(L96, past_timesteps=past_timesteps, model_autoencoder=ae_model)
-                nn_model = FCNN(past_timesteps=latent_dims, nodes_per_layer=nodes_per_layer_AE)
-                nn_model = train_model(X_train, X_test, B_train, B_test, nn_model, num_epochs=num_epochs)
-                nn_model = set_model_metadata(nn_model, past_timesteps, latent_dims=None, model_name='nn+autoencoder', m=m, tau=tau)
-                save_model(nn_model)
             
             if 'NN+AE' in models:
                 # Train NN+AE together (without decoder part)
@@ -831,141 +660,6 @@ def sensitivity_experiment(pt, models=['baseline_nn', 'nn', 'NN+AE'], latent_dim
             
 
         print('Time for experiment [min]: ', (time.time() - ts) / 60)
-
-
-def create_latent_space_trainig_data(m, tau, past_timesteps=1000, latent_dims=5, num_samples=1_000):
-    criterion = nn.MSELoss()
-    # Load Autoencoder model
-    model_name = f'networks/NN+AE_latent_dims={latent_dims}/input_lagg={past_timesteps}/m={m}_tau={tau}_NN+AE.pkl'
-    with open(model_name, 'rb') as file:
-        model = torch.load(file, weights_only=False, map_location='cpu')
-    
-    # Load L96 data
-    print('Loading L96 data...')
-    with open(f'online_runs/NO_PARAMETRIZATION/time=10000000_m={m}_tau={tau}.pkl', 'rb') as file:
-         L96 = pickle.load(file)
-    
-    Nt = 5000  # in MTU
-    tstep = 50
-
-    # Prepare save directory
-    save_dir = Path(f'latent_space_data/dim={latent_dims}_t={Nt}MTU_pt={past_timesteps}_m={m}_tau={tau}')
-    save_dir.mkdir(parents=True, exist_ok=True)
-
-    # Placeholder variables to be initialized later
-    Z_file = X_file = B_file = None
-    Z_shape, X_shape, B_shape = None, None, None
-    total_samples = 0
-
-    for t in range(tstep, Nt, tstep):
-        print(t)
-        L96_subset = L962LvlMem(m=m, tau=tau)
-        L96_subset._history_X = L96._history_X[(t - tstep) * 1000:t * 1000]
-        L96_subset._history_B = L96._history_B[(t - tstep) * 1000:t * 1000]
-
-        X_train, X_test, B_train, B_test = generate_data(L96_subset, past_timesteps, BATCH_SIZE=3000, train_share=1.0)
-        X_present = X_train[:, -1]  # save only the present timestep
-
-        with torch.no_grad():
-            xT, bT = transpose_if_1d(X_train), transpose_if_1d(B_train)
-            b_pred = model.forward(xT)
-            loss = criterion(b_pred, bT)
-            R2 = R2Score()(b_pred, bT)
-
-            x_past = xT[:, :-1]
-            Z_new = model.encoder(x_past).cpu().numpy()  # (N, latent_dims)
-            X_new = X_present.cpu().numpy()
-            B_new = B_train.cpu().numpy()
-
-            print('Loss on data:', loss.item())
-            print('R2 on data:', R2.item())
-
-        # Initialize memory-mapped arrays only once with estimated max shape
-        if Z_file is None:
-            N = ((Nt - tstep) // tstep) * Z_new.shape[0]
-            Z_shape = (N, Z_new.shape[1])
-            X_shape = (N, X_new.shape[1]) if X_new.ndim > 1 else (N,)
-            B_shape = (N, B_new.shape[1]) if B_new.ndim > 1 else (N,)
-
-            Z_file = np.lib.format.open_memmap(save_dir / 'Z.npy', dtype='float32', mode='w+', shape=Z_shape)
-            X_file = np.lib.format.open_memmap(save_dir / 'X.npy', dtype='float32', mode='w+', shape=X_shape)
-            B_file = np.lib.format.open_memmap(save_dir / 'B.npy', dtype='float32', mode='w+', shape=B_shape)
-
-        # Append new data
-        n_new = Z_new.shape[0]
-        Z_file[total_samples:total_samples + n_new] = Z_new
-        X_file[total_samples:total_samples + n_new] = X_new
-        B_file[total_samples:total_samples + n_new] = B_new
-        total_samples += n_new
-
-    # Optionally: truncate if you overestimated the shape
-    Z_file.flush(); X_file.flush(); B_file.flush()
-    print(f'Done. Total samples saved: {total_samples}')
-
-
-def create_latent_space_trainig_data_multi_trajectory(m, tau, past_timesteps=1000, latent_dims=5, trajectories=20):
-    criterion = nn.MSELoss()
-    # Load Autoencoder model
-    model_name = f'networks/NN+AE_latent_dims={latent_dims}/input_lagg={past_timesteps}/m={m}_tau={tau}_NN+AE.pkl'
-    with open(model_name, 'rb') as file:
-        model = torch.load(file, weights_only=False, map_location='cpu')
-    
-    Nt = 102  # in MTU
-    tstep = 50
-
-    # Prepare save directory
-    save_dir = Path(f'latent_space_data/multiple_trajectories/dim={latent_dims}_t={Nt}MTU_pt={past_timesteps}_m={m}_tau={tau}')
-    save_dir.mkdir(parents=True, exist_ok=True)
-
-    for traj in range(14, trajectories):
-        print(f'trajectory: {traj+1}/{trajectories}')
-        # Placeholder variables to be initialized later
-        Z_file = X_file = B_file = None
-        Z_shape, X_shape, B_shape = None, None, None
-        total_samples = 0
-
-        # Make simulation data
-        L96 = L962LvlMem(m=m, tau=tau)
-        L96.iterate(Nt)
-
-        X_train, X_test, B_train, B_test = generate_data(L96, past_timesteps, BATCH_SIZE=3000, train_share=1.0)
-        X_present = X_train[:, -1]  # save only the present timestep
-
-        with torch.no_grad():
-            xT, bT = transpose_if_1d(X_train), transpose_if_1d(B_train)
-            b_pred = model.forward(xT)
-            loss = criterion(b_pred, bT)
-            R2 = R2Score()(b_pred, bT)
-
-            x_past = xT[:, :-1]
-            Z_new = model.encoder(x_past).cpu().numpy()  # (N, latent_dims)
-            X_new = X_present.cpu().numpy()
-            B_new = B_train.cpu().numpy()
-
-            print('Loss on data:', loss.item())
-            print('R2 on data:', R2.item())
-
-        # Initialize memory-mapped arrays only once with estimated max shape
-        if Z_file is None:
-            N = ((Nt - tstep) // tstep) * Z_new.shape[0]
-            Z_shape = (N, Z_new.shape[1])
-            X_shape = (N, X_new.shape[1]) if X_new.ndim > 1 else (N,)
-            B_shape = (N, B_new.shape[1]) if B_new.ndim > 1 else (N,)
-
-            Z_file = np.lib.format.open_memmap(save_dir / f'Z_traj={str(traj).zfill(2)}.npy', dtype='float32', mode='w+', shape=Z_shape)
-            X_file = np.lib.format.open_memmap(save_dir / f'X_traj={str(traj).zfill(2)}.npy', dtype='float32', mode='w+', shape=X_shape)
-            B_file = np.lib.format.open_memmap(save_dir / f'B_traj={str(traj).zfill(2)}.npy', dtype='float32', mode='w+', shape=B_shape)
-
-        # Append new data
-        n_new = Z_new.shape[0]
-        Z_file[total_samples:total_samples + n_new] = Z_new
-        X_file[total_samples:total_samples + n_new] = X_new
-        B_file[total_samples:total_samples + n_new] = B_new
-        total_samples += n_new
-
-        # Optionally: truncate if you overestimated the shape
-        Z_file.flush(); X_file.flush(); B_file.flush()
-        print(f'Done. Total samples saved: {total_samples}')
 
 
 if __name__=='__main__':
