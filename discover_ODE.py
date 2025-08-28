@@ -3,7 +3,7 @@ import pysindy as ps
 import pickle
 import os
 import xarray as xr
-from parametrizations import ODE_Z
+from parameterizations import ODE_Z
 
 
 def load_online_run(path):
