@@ -174,10 +174,11 @@ class NNpODE(nn.Module):
         return y_pred
 
 
-class NNpAEpD(nn.Module):
-    def __init__(self, m, tau, past_timesteps, latent_dims, n_neighbours, nodes_per_layer=16, **kwargs):
-        super().__init__(m=m, tau=tau, past_timesteps=past_timesteps,
-                         latent_dims=latent_dims, n_neighbours=n_neighbours, **kwargs)
+class NNpAEpD(nn.Module, BaseParametrization):
+    def __init__(self, m, tau, past_timesteps, latent_dims, n_neighbours, nodes_per_layer=16):
+        nn.Module.__init__(self)
+        BaseParametrization.__init__(self, m=m, tau=tau, past_timesteps=past_timesteps,
+                         latent_dims=latent_dims, n_neighbours=n_neighbours)
         
         self.nodes_per_layer = nodes_per_layer
         self.model_name = 'NN+AE+D'
@@ -329,9 +330,9 @@ def generate_simple_dataloaders(L96, past_timesteps, time_series_length=10_000, 
     X = L96.X.values.astype(np.float32)[2000:]  # discard first two MTU
     B = L96.B.values.astype(np.float32)[2000:]  # discard first two MTU
     train_ind = int(len(X) * train_share)
-    X_train = torch.tensor(X[train_ind], dtype=torch.float32)  
+    X_train = torch.tensor(X[:train_ind], dtype=torch.float32)  
     X_test = torch.tensor(X[train_ind:], dtype=torch.float32)
-    B_train = torch.tensor(B[train_ind], dtype=torch.float32) 
+    B_train = torch.tensor(B[:train_ind], dtype=torch.float32) 
     B_test = torch.tensor(B[train_ind:], dtype=torch.float32)
 
     # Create datasets
@@ -408,12 +409,14 @@ def train_model(x, x_test, b, b_test, model, num_epochs=5, weight_decay=0.0):
 
 def reconstruction_loss(x_batch, b_batch, model, criterion, reconstruction_criterion, alpha):
     b_pred, x_recon = model(x_batch)
-    return alpha * criterion(b_pred, b_batch) + (1 - alpha) * reconstruction_criterion(x_recon, x_batch[:, :-1]), b_pred
+    loss = alpha * criterion(b_pred, b_batch) + (1 - alpha) * reconstruction_criterion(x_recon, x_batch[:, :-1])
+    return loss, b_pred  # b_pred is important for computing R^2 on the test data. Can be ignored for training data
 
 
 def prediction_loss(x_batch, b_batch, model, criterion):
     b_pred = model(x_batch)
-    return criterion(b_pred, b_batch)
+    loss = criterion(b_pred, b_batch)
+    return loss, b_pred  # b_pred is important for computing R^2 on the test data. Can be ignored for training data
     
 
 def train_model_simple_dataloader(train_loader, test_loader, model, past_timesteps, num_epochs=5, weight_decay=0.0):
@@ -449,7 +452,7 @@ def train_model_simple_dataloader(train_loader, test_loader, model, past_timeste
             b_batch = b_batch[:, past_timesteps:].reshape(-1, 1)
 
             # Compute loss
-            loss = loss_func(x_batch, b_batch, model, criterion, *args)
+            loss, _ = loss_func(x_batch, b_batch, model, criterion, *args)
             # b_pred, x_recon = model(x_batch)
             # loss = alpha * criterion(b_pred, b_batch) + (1 - alpha) * reconstruction_criterion(x_recon, x_batch[:, :-1])
 
@@ -471,7 +474,7 @@ def train_model_simple_dataloader(train_loader, test_loader, model, past_timeste
                 b_batch = b_batch[:, past_timesteps:].reshape(-1, 1)
                 
                 # Compute loss
-                loss = loss_func(x_batch, b_batch, model, criterion, *args)
+                loss, b_pred = loss_func(x_batch, b_batch, model, criterion, *args)
                 # b_pred, x_recon = model(x_batch)
                 # loss = alpha * criterion(b_pred, b_batch) + (1 - alpha) * reconstruction_criterion(x_recon, x_batch[:, :-1])
                 total_test_loss += loss.item()
@@ -657,7 +660,14 @@ if __name__=='__main__':
 
     args = parser.parse_args()
     
-    model = NNpAE(.001, .001, 1000, 5, 10)
+    m, tau = .001, .001
+    past_timesteps, latent_dims, n_neighbours = 1000, 8, 1
+    model = NNpAEpD(m, tau, past_timesteps, latent_dims, n_neighbours)
+    L96 = xr.open_dataset(f'online_runs/NO_PARAMETRIZATION/m={m}_tau={tau}_t=10000MTU_20250903172407.nc')
+
+    dataloader_train, dataloader_test = generate_simple_dataloaders(L96, past_timesteps, train_share=.5)
+    model = train_model_simple_dataloader(dataloader_train, dataloader_test, model, past_timesteps, num_epochs=30, weight_decay=.001)
+
 
 
     #print(args.model_type, args.past_timesteps, args.latent_dims)
