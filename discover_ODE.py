@@ -3,7 +3,7 @@ import pysindy as ps
 import pickle
 import os
 import xarray as xr
-from parameterizations import ODE_Z
+from parametrizations import ODE_Z
 
 
 def load_online_run(path):
@@ -48,7 +48,7 @@ def learn_ODE(path_online_run, lmbda, deg, latent_dim, diff_method=None, save=Tr
             save_path = f'ODEs/dim={latent_dim}_deg={deg}_lambda={lmbda}_finitedifference_more_data.npy'
 
         with open(save_path, 'wb') as file:
-            np. save(file, model.coefficients())
+            np.save(file, model.coefficients())
         #     pickle.dump(model, file)
         
 

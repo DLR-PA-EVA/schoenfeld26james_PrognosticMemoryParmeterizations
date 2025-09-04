@@ -6,7 +6,8 @@ from pathlib import Path
 import os
 import pickle
 import torch
-from parameterizations import NN, NNpAE, NNpAEpD, NNpODE, FCNN, ODE_Z
+from parametrizations import NN, NNpAE, NNpAEpD, FCNN, ODE_Z
+from datetime import datetime
 
 
 class L962LvlMem(object):
@@ -149,7 +150,7 @@ class L962LvlMem(object):
         # Save X and Y to history after a set number of steps
         self.step_count += 1
         if self.step_count % self.save_steps == 0:
-            self.save_step
+            self.save_step(B)
         
         return B
 
@@ -301,77 +302,37 @@ class L962LvlMem(object):
                 h.to_netcdf(f'./online_runs/{model}/input_lagg={pt}/time={int(self.step_count * self.dt - save_interval * self.dt)}_{int(self.step_count * self.dt)}MTU_m={self.m}_tau={self.tau}.nc', mode='w')
 
 
-def save_L96(L96):
-    run_time = int(L96.step_count * L96.dt)
-    try:
-        m, tau = L96.memory_cutoff, L96.memory_tau
-    except AttributeError:
-        m, tau = L96.m, L96.tau
 
-    if L96.parametrization is not None:
-        # This is an online run
-        param = L96.parametrization.model_name
-        input_lagg = L96.parametrization.past_timesteps
-        save_dir = Path(f'./online_runs/{param}/input_lagg={input_lagg}')
-        save_path = f'{save_dir}/time={run_time}MTU_m={m}_tau={tau}.pkl'
-        if not save_dir.exists(): 
-            os.makedirs(save_dir) 
-    else:
-        save_path = f'./online_runs/NO_PARAMETRIZATION/time={run_time}MTU_m={m}_tau={tau}.pkl'
-    
-    with open(save_path, 'wb') as file:
-        pickle.dump(L96, file)
-
-
-def run_online(ms, taus, models, past_timesteps, simulation_time=1000):
+def run_online(model_path, simulation_time, m=None, tau=None, additional_info=None):
+    # Initial conditions for online run
     initX = np.load('initX.npy')[:8]
     initY = np.load('initY.npy')[:8*32]
     np.random.seed(123)
-    # initX = None
-    # initY = None
-    print(models)
 
-    if not isinstance(models, list):
-        models = [models]
+    # Load parametrization from model_path
+    if not model_path:  # Run with no parametrization, m and tau must be provided
+        parametrization  = None
+        save_dir = Path('online_runs/NO_PARAMETRIZATION/')
+    else:
+        parametrization = torch.load(model_path)
+        m, tau = parametrization.m, parametrization.tau
+        save_dir = Path(f'networks/{parametrization.model_name}/latent_dims={parametrization.latent_dims}_past_timesteps={parametrization.past_timesteps}_n_neighbours={parametrization.n_neighbours}/')
+    if not save_dir.exists(): 
+            os.makedirs(save_dir) 
+    
+    # Perform simulation
+    L96 = L962LvlMem(X_init=initX, Y_init=initY, save_dt=.001, m=m, tau=tau, parametrization=parametrization)
+    L96.iterate(simulation_time)
+    h = L96.history
 
-    for m, tau in zip(ms, taus):
-        for model in models:
-            if model == 'baseline_nn':
-                pt = 0
-            else:
-                pt = past_timesteps
-            
-            if 'NN+AE_latent_dims' in model:
-                mn = 'NN+AE'
-            else:
-                mn = model
-            
-            print(m, tau)
-            path = f'networks/{model}/input_lagg={pt}/m={m}_tau={tau}_{mn}.pkl'
-            parametrization = torch.load(path, weights_only=False, map_location='cpu')
-            print(path)
-            parametrization.model_name = model
-            L96 = L962LvlMem(X_init=initX, Y_init=initY, save_dt=.001, m=m, tau=tau, memory_activation_func=None, parametrization=parametrization)
-            L96.iterate(simulation_time)
-            h = L96.history
-            h.attrs['m'] = L96.m
-            h.attrs['tau'] = L96.tau
-            h.attrs['model'] = model
-            h.attrs['past_timesteps'] = L96.parametrization.past_timesteps if L96.parametrization is not None else 0
-            h.attrs['model_path'] = path
-            if hasattr(L96.parametrization, 'latent_dims') and L96.parametrization.latent_dims is None:
-                L96.parametrization.latent_dims = 0
-            h.attrs['latent_dims'] = L96.parametrization.latent_dims if hasattr(L96.parametrization, 'latent_dims') else 0
+    # Save simulation
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    if additional_info:
+        save_file = f'm={m}_tau={tau}_t={simulation_time}MTU_{additional_info}_{timestamp}.nc'
+    else:
+        save_file = f'm={m}_tau={tau}_t={simulation_time}MTU_{timestamp}.nc'
+    h.to_netcdf(save_dir / save_file, mode='w')
 
-            # Save run
-            save_dir = Path(f'./online_runs/{model}/input_lagg={pt}')
-            save_path = f'{save_dir}/time={simulation_time}MTU_m={m}_tau={tau}.nc'
-            if not save_dir.exists(): 
-                os.makedirs(save_dir) 
-            #h.to_netcdf(f'./online_runs/{model}/input_lagg={pt}/time={simulation_time}MTU_m={m}_tau={tau}.nc', mode='w')
-            h.to_netcdf(save_path, mode='w')
-            print(save_path)
-            print(h)
 
 
 def L96_pickle_to_nc(path):
@@ -451,15 +412,18 @@ if __name__=='__main__':
     #path = 'networks/phi_0_0.0_8_m=None_tau=None_20250717112413.pkl'  # Phi_0,0,8
     #print(path)
     #run_NNpAE_online(path)
-    run_online([0.001], [0.001], ['NN+AE+D'], past_timesteps=1000, simulation_time=10_000)
+    #run_online([0.001], [0.001], ['NN+AE+D'], past_timesteps=1000, simulation_time=10_000)
     # run_online([0.001], [0.001], ['ODE_Z'], past_timesteps=1000, simulation_time=10_000)
 
 
     # initX = np.load('initX.npy')[:8]
     # initY = np.load('initY.npy')[:8*32]
     # np.random.seed(123)
-    ms = [np.logspace(-3, 0, 10)[0]]
-    taus = [np.logspace(-3, 2, 10)[0]]
+    ms = [np.logspace(-3, 0, 10)[-1]]
+    taus = [np.logspace(-3, 2, 10)[-1]]
+    for m, tau in zip(ms, taus):
+        print(m, tau)
+        run_online(None, 10_000, m, tau)
     # print(ms, taus)
     # for m, tau in zip(ms, taus):
     #     L96 = L962LvlMem(X_init=initX, Y_init=initY, save_dt=.001, m=m, tau=tau, memory_activation_func=None)

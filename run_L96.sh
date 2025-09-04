@@ -13,4 +13,4 @@ source /sw/spack-levante/mambaforge-22.9.0-2-Linux-x86_64-kptncg/etc/profile.d/c
 conda activate L96_env_sklearn
 
 # Run
-python L96.py # --model_type=NN+AE_latent_dims=5
+python L96.py

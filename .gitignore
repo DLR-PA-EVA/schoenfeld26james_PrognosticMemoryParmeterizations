@@ -1,11 +1,12 @@
 initX.npy
 initY.npy
-Xs
 latent_space_data
 logs
 networks
 online_runs
 *.pyc
 outputs
+online_runs_old
 ODEs
 sim_Z.ipynb
+networks_old
