@@ -6,7 +6,10 @@ from pathlib import Path
 import os
 import pickle
 import torch
-from parametrizations import NN, NNpAE, NNpAEpD, FCNN, ODE_Z
+torch.set_num_threads(1)   # limit intra-op threads
+torch.set_num_interop_threads(1)  # limit inter-op parallelism
+import torch.nn as nn
+from parametrizations import NN, NNpAE, NNpAEpD, ODE_Z, get_circular_neighbours
 from datetime import datetime
 
 
@@ -21,31 +24,36 @@ class L962LvlMem(object):
         parametrization is expected to be a class with: 
         - a forward method such that param.forward(X) -> B
         - a variable past_timesteps that informs L96 how many past X-steps need to be saved for the parametrization
-        '''
+        ''' 
+        # Initialize state variables
+        self.X = np.random.rand(self.K) if X_init is None else X_init.copy()
+        self.Y = np.zeros(self.K * self.J) if Y_init is None else Y_init.copy()
+        self.X = self.X.astype(np.float32)
+        self.Y = self.Y.astype(np.float32)
+        
+        # Inint parametrization
         self.parametrization = parametrization
         if self.parametrization:
+            self.param_memory_X = torch.tensor(np.zeros(shape=(self.K, self.parametrization.past_timesteps + 1)), dtype=torch.float32)  # pre
+            self.param_memory_X[:, 0] = torch.as_tensor(self.X)
             try:
                 self.parametrization.eval()
             except AttributeError:
                 print(f'{self.parametrization.model_name} is not directly a pytorch class \nAssume that you passed on ODE parametrization')
                 self.parametrization.AE.eval()
                 self.parametrization.NN.eval()
-            
-        # Initialize state variables
-        self.X = np.random.rand(self.K) if X_init is None else X_init.copy()
-        self.Y = np.zeros(self.K * self.J) if Y_init is None else Y_init.copy()
-        self.X = self.X.astype(np.float32)
-        self.Y = self.Y.astype(np.float32)
-        if hasattr(self.parametrization, 'latent_dims'):
-            self.Z = np.zeros((self.K, self.parametrization.latent_dims))  # Z0 = 0
-            self.Z_ODE = np.zeros((self.K, self.parametrization.latent_dims))  # Z_ODE0 = 0
+            if hasattr(self.parametrization, 'latent_dims'):
+                self.Z = np.zeros((self.K, self.parametrization.latent_dims))  # Z0 = 0
+                self.Z_ODE = np.zeros((self.K, self.parametrization.latent_dims))  # Z_ODE0 = 0
+            if self.parametrization.n_neighbours > 0:
+                self.circular_neighbours = get_circular_neighbours(self.parametrization.n_neighbours, self.K)
 
         # Memory parameters
         self.tau = tau  # Decay rate of the kernel
         self.m = m  # Maximum memory time
         self.memory_steps = int(self.m / dt)  # Number of stored steps
         self.memory_X = [self.X]  # Store past X values
-        self.param_memory_X = [self.X]  # Store past X values for the parametrization
+        # self.param_memory_X = [self.X]  # Store past X values for the parametrization
         self.times = np.array(range(self.memory_steps - 1, -1, -1)) * self.dt # Delta ts for the memory kernel, from memory_cutoff to zero
         self.time_weights = 1 /(self.tau * (1 - np.exp(- self.m/self.tau))) * np.array([np.exp(-t/self.tau) for t in self.times])  # tau -> 1/tau
         self.memory_activation_func = memory_activation_func
@@ -121,7 +129,6 @@ class L962LvlMem(object):
         memory_term = self.compute_memory_term()
         
         # Compute backreaction term for X
-        # B = -self.h * self.c * self.Y.reshape(self.K, self.J).mean(1)  # coupling term in Rasp et al. configuration
         B = - (self.h /self.b) * self.c * self.Y.reshape(self.K, self.J).sum(1)  # coupling term in Christensen et al. configuration
         
         k1_X = self._rhs_X_dt(self.X, B)
@@ -141,45 +148,45 @@ class L962LvlMem(object):
             self.memory_X.pop(0)  # Remove oldest entry
         self.memory_X.append(self.X.copy())
 
-        # Store X for parametrization
-        if self.parametrization is not None: 
-            if len(self.param_memory_X) >= self.parametrization.past_timesteps + 1:
-                self.param_memory_X.pop(0)  # Remove oldest entry
-            self.param_memory_X.append(self.X.copy())
-
         # Save X and Y to history after a set number of steps
         self.step_count += 1
         if self.step_count % self.save_steps == 0:
             self.save_step(B)
+
+        # Store X for parametrization
+        if (self.parametrization is not None) and (self.parametrization.past_timesteps > 0): 
+            # if len(self.param_memory_X) >= self.parametrization.past_timesteps + 1:
+            #     self.param_memory_X.pop(0)  # Remove oldest entry
+            # self.param_memory_X.append(self.X.copy())
+            self.param_memory_X[:, self.step_count]  = torch.as_tensor(self.X)
         
         return B
 
     def NNpAE_step(self):
-        x = np.array(self.param_memory_X).astype(np.float32).T
-        x = torch.from_numpy(x)
-        x_past = x[:, :-1]
-        x_present = torch.unsqueeze(x[:, -1], 1)
+        x_past = self.param_memory_X[:, :-1]
+        x_present = torch.unsqueeze(self.param_memory_X[:, -1], 1)
         self.Z = self.parametrization.encoder(x_past)
         x_nn = torch.cat((self.Z, x_present), dim=1)
         B = self.parametrization.neural_net(x_nn).numpy().flatten()
         return B
 
     def NN_step(self):
-        x_present_shifted = torch.tensor(np.array([np.roll(self.X, -i) for i in range(self.K)]), dtype=torch.float32)
+        # x_present_shifted = torch.tensor(np.array([np.roll(self.X, -i) for i in range(self.K)]))
+        x_present_shifted = torch.from_numpy(self.X[self.circular_neighbours])
         B = self.parametrization.forward(x_present_shifted).numpy().flatten()
         return B
+    
+    def NNpast_step(self):
+        B = self.parametrization.forward(self.param_memory_X).numpy().flatten()
+        return B
 
-    def baselin_step(self):
-        x = np.array(self.param_memory_X).astype(np.float32).T
-        x = torch.from_numpy(x)
-        B = self.parametrization.forward(x)
+    def baseline_step(self):
+        B = self.parametrization.forward(self.param_memory_X)
         B = B.numpy().flatten()
         return B
 
     def ODE_Z_step(self):
-        x = np.array(self.param_memory_X).astype(np.float32).T
-        x = torch.from_numpy(x)
-        x_past = x[:, :-1]
+        x_past = self.param_memory_X[:, :-1]
         self.Z = self.parametrization.AE.encoder(x_past)
 
         if self.step_count <= 2000:  # Run another MTU to spinup AE
@@ -209,17 +216,17 @@ class L962LvlMem(object):
     def save_XBZ(self, B):
         self._history_X.append(self.X.copy())
         self._history_B.append(B.copy())
-        self._history_X.append(self.Z)
+        self._history_Z.append(self.Z)
 
     def save_XBZODEZ(self, B):
         self._history_X.append(self.X.copy())
         self._history_B.append(B.copy())
-        self._history_X.append(self.Z)
-        self._history_X.append(self.Z_ODE)
+        self._history_Z.append(self.Z)
+        self._history_Z_ODE.append(self.Z_ODE)
 
     def step_parametrized(self):
         # Check if enough data is available to run the parametrization
-        if self.step_count <= 1000:  # Do spinup with regular L96 for 1 MTU
+        if self.step_count <= 999:  # Do spinup with regular L96 for 1 MTU
             # Run step with fast variables
             self.step()
             return
@@ -240,15 +247,15 @@ class L962LvlMem(object):
         
         self.X += (1 / 6) * (k1_X + 2 * k2_X + 2 * k3_X + k4_X)
 
-        # Store X for parametrization
-        if len(self.param_memory_X) >= self.parametrization.past_timesteps + 1:
-            self.param_memory_X.pop(0)  # Remove oldest entry
-        self.param_memory_X.append(self.X.copy())
-
         # Save history after a set number of steps
         self.step_count += 1
         if self.step_count % self.save_steps == 0:
             self.save_step(B)
+
+        # Store X for parametrization
+        self.param_memory_X = torch.cat([self.param_memory_X[:, 1:], torch.as_tensor(self.X).unsqueeze(1)], dim=1)
+
+        
                 
     def iterate(self, time, save_interval=500000000, model='baseline_nn'):
         if self.parametrization is not None:
@@ -259,8 +266,14 @@ class L962LvlMem(object):
             elif self.parametrization.model_name == 'ODE_Z':
                 self.forward_step = self.ODE_Z_step
                 self.save_step = self.save_XBZODEZ
-            elif self.parametrization.model_name == 'NN':
+            elif (self.parametrization.model_name == 'NN') and (self.parametrization.n_neighbours > 0):
                 self.forward_step = self.NN_step
+                self.save_step = self.save_XB
+            elif (self.parametrization.model_name == 'NN') and (self.parametrization.n_neighbours == 0):
+                self.forward_step = self.baseline_step
+                self.save_step = self.save_XB
+            elif self.parametrization.model_name == 'NNpast':
+                self.forward_step = self.NNpast_step
                 self.save_step = self.save_XB
             elif self.parametrization.model_name == 'NN+AE+D':
                 self.forward_step = self.NNpAE_step
@@ -268,9 +281,6 @@ class L962LvlMem(object):
             elif self.parametrization.model_name == 'NN+AE':
                 self.forward_step = self.NNpAE_step
                 self.save_step = self.save_XBZ
-            elif self.parametrization.modell_name == 'baseline_nn':
-                self.forward_step = self.baseline_step
-                self.save_step = self.save_XB
         else:
             step_func = self.step
             self.save_step = self.save_XB
@@ -279,31 +289,36 @@ class L962LvlMem(object):
         for _ in tqdm(range(steps)):
             step_func()
 
-            if self.step_count % save_interval == 0:
-                if model == 'baseline_nn':
-                    pt = 0
-                else:
-                    pt = self.parametrization.past_timesteps
+            # if self.step_count % save_interval == 0:
+            #     if model == 'baseline_nn':
+            #         pt = 0
+            #     else:
+            #         pt = self.parametrization.past_timesteps
                 
-                if 'NN+AE' in model:
-                    mn = 'NN+AE'
-                else:
-                    mn = model
-                h = self.history
-                h.attrs['m'] = self.m
-                h.attrs['tau'] = self.tau
-                h.attrs['model'] = self.parametrization.model_name if self.parametrization is not None else 'NO_PARAMETRIZATION'
-                h.attrs['past_timesteps'] = self.parametrization.past_timesteps if self.parametrization is not None else 0
-                path = f'networks/{model}/input_lagg={pt}/m={self.m}_tau={self.tau}_{mn}.pkl'
-                h.attrs['model_path'] = path
-                if hasattr(self.parametrization, 'latent_dims') and self.parametrization.latent_dims is None:
-                    self.parametrization.latent_dims = 0
-                h.attrs['latent_dims'] = self.parametrization.latent_dims if hasattr(self.parametrization, 'latent_dims') else 0
-                h.to_netcdf(f'./online_runs/{model}/input_lagg={pt}/time={int(self.step_count * self.dt - save_interval * self.dt)}_{int(self.step_count * self.dt)}MTU_m={self.m}_tau={self.tau}.nc', mode='w')
-
+            #     if 'NN+AE' in model:
+            #         mn = 'NN+AE'
+            #     else:
+            #         mn = model
+            #     h = self.history
+            #     h.attrs['m'] = self.m
+            #     h.attrs['tau'] = self.tau
+            #     h.attrs['model'] = self.parametrization.model_name if self.parametrization is not None else 'NO_PARAMETRIZATION'
+            #     h.attrs['past_timesteps'] = self.parametrization.past_timesteps if self.parametrization is not None else 0
+            #     path = f'networks/{model}/input_lagg={pt}/m={self.m}_tau={self.tau}_{mn}.pkl'
+            #     h.attrs['model_path'] = path
+            #     if hasattr(self.parametrization, 'latent_dims') and self.parametrization.latent_dims is None:
+            #         self.parametrization.latent_dims = 0
+            #     h.attrs['latent_dims'] = self.parametrization.latent_dims if hasattr(self.parametrization, 'latent_dims') else 0
+            #     h.to_netcdf(f'./online_runs/{model}/input_lagg={pt}/time={int(self.step_count * self.dt - save_interval * self.dt)}_{int(self.step_count * self.dt)}MTU_m={self.m}_tau={self.tau}.nc', mode='w')
 
 
 def run_online(model_path, simulation_time, m=None, tau=None, additional_info=None):
+    '''
+    Function for running parametrizations online with L96
+    model_path: path to trained pytorch model
+    simulation_time: duration, in MTU, of the simulation
+    m, tau: memory kernel parameters. If not passed directly they are inferred from the model 
+    '''
     # Initial conditions for online run
     initX = np.load('initX.npy')[:8]
     initY = np.load('initY.npy')[:8*32]
@@ -314,9 +329,13 @@ def run_online(model_path, simulation_time, m=None, tau=None, additional_info=No
         parametrization  = None
         save_dir = Path('online_runs/NO_PARAMETRIZATION/')
     else:
-        parametrization = torch.load(model_path)
+        print(model_path)
+
+        parametrization = torch.load(model_path, map_location='cpu', weights_only=False)
+        print(parametrization.model_name, parametrization.n_neighbours)
+
         m, tau = parametrization.m, parametrization.tau
-        save_dir = Path(f'networks/{parametrization.model_name}/latent_dims={parametrization.latent_dims}_past_timesteps={parametrization.past_timesteps}_n_neighbours={parametrization.n_neighbours}/')
+        save_dir = Path(f'online_runs/{parametrization.model_name}/latent_dims={parametrization.latent_dims}_past_timesteps={parametrization.past_timesteps}_n_neighbours={parametrization.n_neighbours}/')
     if not save_dir.exists(): 
             os.makedirs(save_dir) 
     
@@ -332,7 +351,6 @@ def run_online(model_path, simulation_time, m=None, tau=None, additional_info=No
     else:
         save_file = f'm={m}_tau={tau}_t={simulation_time}MTU_{timestamp}.nc'
     h.to_netcdf(save_dir / save_file, mode='w')
-
 
 
 def L96_pickle_to_nc(path):
@@ -419,11 +437,11 @@ if __name__=='__main__':
     # initX = np.load('initX.npy')[:8]
     # initY = np.load('initY.npy')[:8*32]
     # np.random.seed(123)
-    ms = [np.logspace(-3, 0, 10)[-1]]
-    taus = [np.logspace(-3, 2, 10)[-1]]
-    for m, tau in zip(ms, taus):
-        print(m, tau)
-        run_online(None, 10_000, m, tau)
+    # ms = [np.logspace(-3, 0, 10)[-1]]
+    # taus = [np.logspace(-3, 2, 10)[-1]]
+    # for m, tau in zip(ms, taus):
+    #     print(m, tau)
+    #     run_online(None, 10_000, m, tau)
     # print(ms, taus)
     # for m, tau in zip(ms, taus):
     #     L96 = L962LvlMem(X_init=initX, Y_init=initY, save_dt=.001, m=m, tau=tau, memory_activation_func=None)
@@ -431,3 +449,27 @@ if __name__=='__main__':
     #     save_L96(L96)
 
     #run_online(ms, taus, models=args.model_type, past_timesteps=1000)
+
+    paths_weak_kernel = ['networks/NN+AE+D/latent_dims=8_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905173346.pkl', 
+                         'networks/NN+AE+D/latent_dims=5_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905163313.pkl',
+                         'networks/NN+AE+D/latent_dims=3_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905153331.pkl',
+                         'networks/NN+AE/latent_dims=3_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905150348.pkl',
+                         'networks/NN+AE/latent_dims=5_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905152851.pkl',
+                         'networks/NN+AE/latent_dims=8_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905155405.pkl',
+                         'networks/NN/latent_dims=0_past_timesteps=0_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905153939.pkl',
+                         'networks/NN/latent_dims=0_past_timesteps=0_n_neighbours=7/m=0.001_tau=0.001_w=0.001_20250905161835.pkl',
+                         'networks/NNpast/latent_dims=0_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905152318.pkl'
+                         ]
+    paths_strong_kernel = ['networks/NN+AE+D/latent_dims=8_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905173228.pkl',
+                           'networks/NN+AE+D/latent_dims=5_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905163102.pkl',
+                           'networks/NN+AE+D/latent_dims=3_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905153037.pkl',
+                           'networks/NN+AE/latent_dims=3_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905150650.pkl',
+                           'networks/NN+AE/latent_dims=5_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905153144.pkl',
+                           'networks/NN+AE/latent_dims=8_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905155709.pkl',
+                           'networks/NN/latent_dims=0_past_timesteps=0_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905170515.pkl',
+                           'networks/NN/latent_dims=0_past_timesteps=0_n_neighbours=7/m=1.0_tau=100.0_w=0.001_20250905174304.pkl',
+                           'networks/NNpast/latent_dims=0_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905164945.pkl'
+                           ]
+
+    for path in paths_strong_kernel:
+        run_online(path, 10_000)

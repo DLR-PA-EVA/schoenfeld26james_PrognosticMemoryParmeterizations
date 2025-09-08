@@ -25,8 +25,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Model classes
 class BaseParametrization:
-    def __init__(self, m, tau, past_timesteps, latent_dims, n_neighbours, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, m, tau, past_timesteps, latent_dims, n_neighbours):
+        super().__init__()
         # L96 params
         self.m = m
         self.tau = tau
@@ -102,10 +102,11 @@ class NNpAE(nn.Module, BaseParametrization):
         return y_pred
    
 
-class FCNN(nn.Module):
-    def __init__(self, m, tau, n_neighbours, past_timesteps=0, latent_dims=0, nodes_per_layer=16, **kwargs):
-        super().__init__(m=m, tau=tau, past_timesteps=past_timesteps,
-                         latent_dims=latent_dims, n_neighbours=n_neighbours, **kwargs)
+class NNpast(nn.Module, BaseParametrization):
+    def __init__(self, m, tau, past_timesteps, latent_dims, n_neighbours, nodes_per_layer=16):
+        nn.Module.__init__(self)
+        BaseParametrization.__init__(self, m=m, tau=tau, past_timesteps=past_timesteps,
+                                     latent_dims=latent_dims, n_neighbours=n_neighbours)
         self.nodes_per_layer = nodes_per_layer
         self.model_name = 'FCNN'
         # Layers
@@ -124,16 +125,17 @@ class FCNN(nn.Module):
         return x
     
 
-class NN(nn.Module):
-    def __init__(self, m, tau, n_neighbours, past_timesteps=0, latent_dims=0, nodes_per_layer=16, **kwargs):
-        super().__init__(m=m, tau=tau, past_timesteps=past_timesteps,
-                         latent_dims=latent_dims, n_neighbours=n_neighbours, **kwargs)
+class NN(nn.Module, BaseParametrization):
+    def __init__(self, m, tau, past_timesteps, latent_dims, n_neighbours, model_name, nodes_per_layer=16):
+        nn.Module.__init__(self)
+        BaseParametrization.__init__(self, m=m, tau=tau, past_timesteps=past_timesteps,
+                                     latent_dims=latent_dims, n_neighbours=n_neighbours)
 
         self.nodes_per_layer = nodes_per_layer
-        self.model_name = 'NN'
+        self.model_name = model_name
 
         self.neural_net = nn.Sequential(
-            nn.Linear(self.past_timesteps + self.n_neighbours, self.nodes_per_layer),
+            nn.Linear(self.past_timesteps + self.n_neighbours + 1, self.nodes_per_layer),  #n_neighbours+1 as X_k is always passed on top
             nn.ReLU(),
             nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
             nn.ReLU(),
@@ -145,12 +147,17 @@ class NN(nn.Module):
             nn.ReLU(),
             nn.Linear(self.nodes_per_layer, 1)
         )
+    
+    def forward(self, x):
+        y_pred = self.neural_net(x)
+        return y_pred
 
 
-class NNpODE(nn.Module):
-    def __init__(self, m, tau, past_timesteps, latent_dims, n_neighbours, nodes_per_layer=16, **kwargs):
-        super().__init__(m=m, tau=tau, past_timesteps=past_timesteps,
-                         latent_dims=latent_dims, n_neighbours=n_neighbours, **kwargs)
+class NNpODE(nn.Module, BaseParametrization):
+    def __init__(self, m, tau, past_timesteps, latent_dims, n_neighbours, nodes_per_layer=16):
+        nn.Module.__init__(self)
+        BaseParametrization.__init__(self, m=m, tau=tau, past_timesteps=past_timesteps,
+                                     latent_dims=latent_dims, n_neighbours=n_neighbours)
 
         self.nodes_per_layer = nodes_per_layer
         self.model_name = 'NN+ODE'
@@ -204,7 +211,7 @@ class NNpAEpD(nn.Module, BaseParametrization):
         )
 
         self.neural_net = nn.Sequential(
-            nn.Linear(latent_dims + n_neighbours, self.nodes_per_layer),
+            nn.Linear(latent_dims + 1, self.nodes_per_layer),  # + 1 to account for present X_k value
             nn.ReLU(),
             nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
             nn.ReLU(),
@@ -230,8 +237,7 @@ class NNpAEpD(nn.Module, BaseParametrization):
 
 class ODE_Z(BaseParametrization):
     def __init__(self, m, tau, past_timesteps, latent_dims, n_neighbours, path_ODE, path_AE, path_NN, model_name, K=8, dt=.001, **kwargs):
-        super().__init__(m=m, tau=tau, past_timesteps=past_timesteps,
-                         latent_dims=latent_dims, n_neighbours=n_neighbours, **kwargs)
+        super().__init__(self, m=m, tau=tau, past_timesteps=past_timesteps, latent_dims=latent_dims, n_neighbours=n_neighbours)
         '''
         This class is a wrapper that allows the interplay between the existing L96 implementation and a fitted pysindy model
         path: Path to pysindy model
@@ -326,7 +332,63 @@ class TimeSeriesDataset(Dataset):
         return x_window, b_target
 
 
-def generate_simple_dataloaders(L96, past_timesteps, time_series_length=10_000, train_share=.8, batch_size=64):
+def get_circular_neighbours(n_neighbours, num_coords):
+    # Make lookup array for circular neighbours
+    if n_neighbours >= num_coords:
+        raise ValueError("n_neighbours must be smaller then K")
+    circular_neighbours = []
+    for k in range(num_coords):
+        ks_subset = [k]
+        for i in range(1, 1 + n_neighbours // 2):
+            ks_subset.append(k + i)
+            ks_subset.append(k - i)
+        if n_neighbours % 2 != 0:
+            ks_subset.append(k + i + 1)
+        circular_neighbours.append(ks_subset)
+
+    circular_neighbours = np.mod(circular_neighbours, num_coords)
+    return circular_neighbours
+
+
+class ShiftedCoordinatesDataset(Dataset):
+    def __init__(self, X, B, n_neighbours, time_series_length):
+        """
+        X: torch.Tensor of shape (NT, num_coords)
+        B: torch.Tensor of shape (NT, num_coords)
+        past_timesteps: int, number of past timesteps per sample
+        """
+        self.X = X
+        self.B = B
+        self.n_neighbours = n_neighbours
+        self.NT, self.num_coords = X.shape
+        print(self.num_coords, self.n_neighbours)
+        self.time_series_length = time_series_length
+        self.num_samples = int(self.NT / self.time_series_length)  
+        print((self.NT) / self.time_series_length)
+        self.circular_neighbours = get_circular_neighbours(self.n_neighbours, self.num_coords)
+
+    def __len__(self):
+        return self.num_coords * self.num_samples
+
+    def __getitem__(self, idx):
+        """
+        Returns:
+            x_window: shape (time_series_length + past_timesteps,)
+            b_target: scalar
+        """
+        coord = idx // self.num_samples       # which coordinate
+        coords = self.circular_neighbours[coord]  # coordinates from neighbours
+        time_idx = idx % self.num_samples     # which time step
+        
+        tstart =  time_idx * self.time_series_length 
+        tend = tstart + self.time_series_length 
+        x_window = self.X[tstart: tend, coords]
+        b_target = self.B[tstart: tend, coord]  # present value, only for xk
+
+        return x_window, b_target
+
+
+def generate_simple_dataloaders(L96, model, time_series_length=10_000, train_share=.8, batch_size=64):
     X = L96.X.values.astype(np.float32)[2000:]  # discard first two MTU
     B = L96.B.values.astype(np.float32)[2000:]  # discard first two MTU
     train_ind = int(len(X) * train_share)
@@ -336,8 +398,12 @@ def generate_simple_dataloaders(L96, past_timesteps, time_series_length=10_000, 
     B_test = torch.tensor(B[train_ind:], dtype=torch.float32)
 
     # Create datasets
-    train_dataset = TimeSeriesDataset(X_train, B_train, past_timesteps, time_series_length=time_series_length)
-    test_dataset = TimeSeriesDataset(X_test, B_test, past_timesteps, time_series_length=time_series_length)
+    if model.model_name in ['NN+AE', 'NN+AE+D', 'NNpast']:
+        train_dataset = TimeSeriesDataset(X_train, B_train, model.past_timesteps, time_series_length=time_series_length)
+        test_dataset = TimeSeriesDataset(X_test, B_test, model.past_timesteps, time_series_length=time_series_length)
+    elif model.model_name in ['NN']:
+        train_dataset = ShiftedCoordinatesDataset(X_train, B_train, model.n_neighbours, time_series_length)
+        test_dataset = ShiftedCoordinatesDataset(X_test, B_test, model.n_neighbours, time_series_length)
 
     # Create dataloaders
     num_workers = 1
@@ -419,7 +485,21 @@ def prediction_loss(x_batch, b_batch, model, criterion):
     return loss, b_pred  # b_pred is important for computing R^2 on the test data. Can be ignored for training data
     
 
-def train_model_simple_dataloader(train_loader, test_loader, model, past_timesteps, num_epochs=5, weight_decay=0.0):
+def process_past_timesteps(x_batch, b_batch, past_timesteps):
+    x_batch, b_batch = x_batch.to(device), b_batch.to(device)
+    x_batch = x_batch.unfold(1, past_timesteps + 1, 1).reshape(-1, past_timesteps + 1)  # create lagged time series on gpu
+    b_batch = b_batch[:, past_timesteps:].reshape(-1, 1)
+    return x_batch, b_batch
+
+
+def process_neighbours(x_batch, b_batch, n_neighbours):
+    x_batch, b_batch = x_batch.to(device), b_batch.to(device)
+    x_batch = x_batch.reshape(-1, n_neighbours + 1)  # n_neigbours +1 as x_k is included additionally
+    b_batch = b_batch.reshape(-1, 1)
+    return x_batch, b_batch
+
+
+def train_model_simple_dataloader(train_loader, test_loader, model, num_epochs=5, weight_decay=0.0):
     model = model.to(device)
     criterion = nn.MSELoss()
     lr = 0.007
@@ -430,15 +510,25 @@ def train_model_simple_dataloader(train_loader, test_loader, model, past_timeste
     best_R2 = float('-inf')
     best_R2_epoch = 0
     pbar = trange(num_epochs, desc="Training", ncols=150)
-
+    
+    # Set loss function
     if model.model_name == 'NN+AE+D':
         reconstruction_criterion = nn.MSELoss()
         loss_func = reconstruction_loss
         alpha = 0.5
-        args = (reconstruction_criterion, alpha)
+        loss_args = (reconstruction_criterion, alpha)
     else:
         loss_func = prediction_loss
-        args = ()
+        loss_args = ()
+    
+    # Set preprocessing function
+    if model.model_name == 'NN':
+        process_func = process_neighbours
+        process_args = (model.n_neighbours,)
+
+    elif model.model_name in ['NN+AE+D', 'NNpast', 'NN+AE']:
+        process_func = process_past_timesteps
+        process_args = (model.past_timesteps,)
 
     for epoch in pbar:
         model.train()
@@ -447,14 +537,10 @@ def train_model_simple_dataloader(train_loader, test_loader, model, past_timeste
         # Iterate over batches
         for x_batch, b_batch in train_loader:
             # Preprocessing
-            x_batch, b_batch = x_batch.to(device), b_batch.to(device)
-            x_batch = x_batch.unfold(1, past_timesteps + 1, 1).reshape(-1, past_timesteps + 1)  # create lagged time series on gpu
-            b_batch = b_batch[:, past_timesteps:].reshape(-1, 1)
+            x_batch, b_batch = process_func(x_batch, b_batch, *process_args)
 
             # Compute loss
-            loss, _ = loss_func(x_batch, b_batch, model, criterion, *args)
-            # b_pred, x_recon = model(x_batch)
-            # loss = alpha * criterion(b_pred, b_batch) + (1 - alpha) * reconstruction_criterion(x_recon, x_batch[:, :-1])
+            loss, _ = loss_func(x_batch, b_batch, model, criterion, *loss_args)
 
             # Back propagation
             optimizer.zero_grad()
@@ -468,15 +554,11 @@ def train_model_simple_dataloader(train_loader, test_loader, model, past_timeste
         total_R2 = 0.0
         with torch.no_grad():
             for x_batch, b_batch in test_loader:
-                x_batch, b_batch = x_batch.to(device), b_batch.to(device)
                 # Preprocessing
-                x_batch = x_batch.unfold(1, past_timesteps + 1, 1).reshape(-1, past_timesteps + 1)  # create lagged time series on gpu
-                b_batch = b_batch[:, past_timesteps:].reshape(-1, 1)
-                
+                x_batch, b_batch = process_func(x_batch, b_batch, *process_args)
+
                 # Compute loss
-                loss, b_pred = loss_func(x_batch, b_batch, model, criterion, *args)
-                # b_pred, x_recon = model(x_batch)
-                # loss = alpha * criterion(b_pred, b_batch) + (1 - alpha) * reconstruction_criterion(x_recon, x_batch[:, :-1])
+                loss, b_pred = loss_func(x_batch, b_batch, model, criterion, *loss_args)
                 total_test_loss += loss.item()
                 total_R2 += R2Score().to(device)(b_pred, b_batch)
 
@@ -660,13 +742,20 @@ if __name__=='__main__':
 
     args = parser.parse_args()
     
-    m, tau = .001, .001
-    past_timesteps, latent_dims, n_neighbours = 1000, 8, 1
-    model = NNpAEpD(m, tau, past_timesteps, latent_dims, n_neighbours)
-    L96 = xr.open_dataset(f'online_runs/NO_PARAMETRIZATION/m={m}_tau={tau}_t=10000MTU_20250903172407.nc')
-
-    dataloader_train, dataloader_test = generate_simple_dataloaders(L96, past_timesteps, train_share=.5)
-    model = train_model_simple_dataloader(dataloader_train, dataloader_test, model, past_timesteps, num_epochs=30, weight_decay=.001)
+    m, tau, id = .001, .001, 20250903172407
+    # m, tau, id = 1.0, 100.0, 20250903220204
+    past_timesteps, latent_dims, n_neighbours = 1000, 0, 0
+    
+    for m, tau, id in zip([.001, 1.0], [.001, 100.0], [20250903172407, 20250903220204]):
+        print('m, tau:', m, tau)
+        L96 = xr.open_dataset(f'online_runs/NO_PARAMETRIZATION/m={m}_tau={tau}_t=10000MTU_{id}.nc')
+        for past_timesteps, model_name, n_neighbours in zip([1000, 0, 0], ['NNpast', 'NN', 'NN'], [0, 0, 7]):
+            for w in [0.0, 1.e-6, 1.e-5, 1.e-4, 1.e-3, 1.e-2, 1.e-1, 1.]:        
+                model = NN(m, tau, past_timesteps, latent_dims, n_neighbours, model_name)
+                print(w, model.past_timesteps, model.model_name)
+                dataloader_train, dataloader_test = generate_simple_dataloaders(L96, model, train_share=.5)
+                model = train_model_simple_dataloader(dataloader_train, dataloader_test, model, num_epochs=100, weight_decay=w)
+                model.save(additional_info=f'w={w}')
 
 
 
