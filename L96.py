@@ -158,7 +158,7 @@ class L962LvlMem(object):
             # if len(self.param_memory_X) >= self.parametrization.past_timesteps + 1:
             #     self.param_memory_X.pop(0)  # Remove oldest entry
             # self.param_memory_X.append(self.X.copy())
-            self.param_memory_X[:, self.step_count]  = torch.as_tensor(self.X)
+            self.param_memory_X[:, self.step_count % (self.parametrization.past_timesteps + 1)]  = torch.as_tensor(self.X)  # % is necessary if ODE_step calls normal step allongside parametrization
         
         return B
 
@@ -330,9 +330,7 @@ def run_online(model_path, simulation_time, m=None, tau=None, additional_info=No
         save_dir = Path('online_runs/NO_PARAMETRIZATION/')
     else:
         print(model_path)
-
         parametrization = torch.load(model_path, map_location='cpu', weights_only=False)
-        print(parametrization.model_name, parametrization.n_neighbours)
 
         m, tau = parametrization.m, parametrization.tau
         save_dir = Path(f'online_runs/{parametrization.model_name}/latent_dims={parametrization.latent_dims}_past_timesteps={parametrization.past_timesteps}_n_neighbours={parametrization.n_neighbours}/')
@@ -450,26 +448,29 @@ if __name__=='__main__':
 
     #run_online(ms, taus, models=args.model_type, past_timesteps=1000)
 
-    paths_weak_kernel = ['networks/NN+AE+D/latent_dims=8_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905173346.pkl', 
-                         'networks/NN+AE+D/latent_dims=5_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905163313.pkl',
-                         'networks/NN+AE+D/latent_dims=3_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905153331.pkl',
-                         'networks/NN+AE/latent_dims=3_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905150348.pkl',
-                         'networks/NN+AE/latent_dims=5_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905152851.pkl',
-                         'networks/NN+AE/latent_dims=8_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905155405.pkl',
-                         'networks/NN/latent_dims=0_past_timesteps=0_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905153939.pkl',
-                         'networks/NN/latent_dims=0_past_timesteps=0_n_neighbours=7/m=0.001_tau=0.001_w=0.001_20250905161835.pkl',
-                         'networks/NNpast/latent_dims=0_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905152318.pkl'
-                         ]
-    paths_strong_kernel = ['networks/NN+AE+D/latent_dims=8_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905173228.pkl',
-                           'networks/NN+AE+D/latent_dims=5_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905163102.pkl',
-                           'networks/NN+AE+D/latent_dims=3_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905153037.pkl',
-                           'networks/NN+AE/latent_dims=3_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905150650.pkl',
-                           'networks/NN+AE/latent_dims=5_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905153144.pkl',
-                           'networks/NN+AE/latent_dims=8_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905155709.pkl',
-                           'networks/NN/latent_dims=0_past_timesteps=0_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905170515.pkl',
-                           'networks/NN/latent_dims=0_past_timesteps=0_n_neighbours=7/m=1.0_tau=100.0_w=0.001_20250905174304.pkl',
-                           'networks/NNpast/latent_dims=0_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905164945.pkl'
-                           ]
+    # paths_weak_kernel = ['networks/NN+AE+D/latent_dims=8_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905173346.pkl', 
+    #                      'networks/NN+AE+D/latent_dims=5_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905163313.pkl',
+    #                      'networks/NN+AE+D/latent_dims=3_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905153331.pkl',
+    #                      'networks/NN+AE/latent_dims=3_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905150348.pkl',
+    #                      'networks/NN+AE/latent_dims=5_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905152851.pkl',
+    #                      'networks/NN+AE/latent_dims=8_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905155405.pkl',
+    #                      'networks/NN/latent_dims=0_past_timesteps=0_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905153939.pkl',
+    #                      'networks/NN/latent_dims=0_past_timesteps=0_n_neighbours=7/m=0.001_tau=0.001_w=0.001_20250905161835.pkl',
+    #                      'networks/NNpast/latent_dims=0_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905152318.pkl'
+    #                      ]
+    # paths_strong_kernel = ['networks/NN+AE+D/latent_dims=8_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905173228.pkl',
+    #                        'networks/NN+AE+D/latent_dims=5_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905163102.pkl',
+    #                        'networks/NN+AE+D/latent_dims=3_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905153037.pkl',
+    #                        'networks/NN+AE/latent_dims=3_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905150650.pkl',
+    #                        'networks/NN+AE/latent_dims=5_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905153144.pkl',
+    #                        'networks/NN+AE/latent_dims=8_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905155709.pkl',
+    #                        'networks/NN/latent_dims=0_past_timesteps=0_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905170515.pkl',
+    #                        'networks/NN/latent_dims=0_past_timesteps=0_n_neighbours=7/m=1.0_tau=100.0_w=0.001_20250905174304.pkl',
+    #                        'networks/NNpast/latent_dims=0_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905164945.pkl'
+    #                        ]
 
-    for path in paths_strong_kernel:
-        run_online(path, 10_000)
+    # for path in paths_weak_kernel[1:]:
+    #     run_online(path, 10_000)
+
+    path = 'networks/ODE_Z_online/latent_dims=8_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_20250912143641.pkl'
+    run_online(path, 10_000)

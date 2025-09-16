@@ -56,8 +56,10 @@ class BaseParametrization:
             save_file = f'm={self.m}_tau={self.tau}_{additional_info}_{timestamp}.pkl'
         else:
             save_file = f'm={self.m}_tau={self.tau}_{timestamp}.pkl'
-
-        torch.save(model, f'{save_dir}/{save_file}')
+        save_path = f'{save_dir}/{save_file}'
+        torch.save(self, save_path)
+        
+        return save_path
 
 
 class NNpAE(nn.Module, BaseParametrization):
@@ -235,9 +237,10 @@ class NNpAEpD(nn.Module, BaseParametrization):
         return y_pred, x_reconstructed
 
 
-class ODE_Z(BaseParametrization):
-    def __init__(self, m, tau, past_timesteps, latent_dims, n_neighbours, path_ODE, path_AE, path_NN, model_name, K=8, dt=.001, **kwargs):
-        super().__init__(self, m=m, tau=tau, past_timesteps=past_timesteps, latent_dims=latent_dims, n_neighbours=n_neighbours)
+class ODE_Z(nn.Module, BaseParametrization):
+    def __init__(self, m, tau, past_timesteps, latent_dims, n_neighbours, path_ODE, path_AE, path_NN, model_name, K=8, dt=.001):
+        nn.Module.__init__(self)
+        BaseParametrization.__init__(self, m=m, tau=tau, past_timesteps=past_timesteps, latent_dims=latent_dims, n_neighbours=n_neighbours)
         '''
         This class is a wrapper that allows the interplay between the existing L96 implementation and a fitted pysindy model
         path: Path to pysindy model
@@ -275,25 +278,6 @@ class ODE_Z(BaseParametrization):
         k4 = self._rhs_Z_dt(z + k3, x)
 
         return z + (1 /6) * (k1 + 2*k2 + 2*k3 + k4)
-
-
-# Feature creation
-def generate_data(L96, past_timesteps, BATCH_SIZE=3000, train_share=.8, device=device):
-    # Get data
-    X = L96.X.values.astype(np.float32)
-    B = L96.B.values.astype(np.float32)
-    train_ind = int(len(X) * train_share)
-    X_train = X[:train_ind]
-    X_test = X[train_ind:]
-    B_train = B[:train_ind]
-    B_test = B[train_ind:]
-
-    X_train = torch.tensor(return_lagged_input_vector_opt(X_train.T, past_timesteps), dtype=torch.float32, device=device)
-    X_test = torch.tensor(return_lagged_input_vector_opt(X_test.T, past_timesteps), dtype=torch.float32, device=device)
-    B_train = torch.tensor(return_lagged_input_vector_opt(B_train.T, past_timesteps), dtype=torch.float32, device=device)[:,-1].reshape(-1,1)
-    B_test = torch.tensor(return_lagged_input_vector_opt(B_test.T, past_timesteps), dtype=torch.float32, device=device)[:,-1].reshape(-1,1)
-
-    return X_train, X_test, B_train, B_test
 
 
 class TimeSeriesDataset(Dataset):
@@ -388,14 +372,42 @@ class ShiftedCoordinatesDataset(Dataset):
         return x_window, b_target
 
 
-def generate_simple_dataloaders(L96, model, time_series_length=10_000, train_share=.8, batch_size=64):
+class LatentDimsCoordinatesDataset(Dataset):
+    def __init__(self, ZX, B):
+        """
+        X: torch.Tensor of shape (NT, num_coords)
+        B: torch.Tensor of shape (NT, num_coords)
+        past_timesteps: int, number of past timesteps per sample
+        """
+        self.ZX = ZX
+        self.B = B
+        self.num_samples = self.ZX.shape[0]
+        
+    def __len__(self):
+        return self.num_samples
+
+    def __getitem__(self, idx):
+        """
+        Returns:
+            x_window: shape (time_series_length + past_timesteps,)
+            b_target: scalar
+        """
+        zx_window = self.ZX[idx]
+        b_target = self.B[idx]  # present value, only for xk
+        return zx_window, b_target
+
+
+def train_test_split(X, train_ind):
+    return torch.tensor(X[:train_ind], dtype=torch.float32), torch.tensor(X[train_ind:], dtype=torch.float32)
+
+
+def generate_dataloaders(L96, model, time_series_length=10_000, train_share=.8, batch_size=64, num_workers=1):
     X = L96.X.values.astype(np.float32)[2000:]  # discard first two MTU
     B = L96.B.values.astype(np.float32)[2000:]  # discard first two MTU
     train_ind = int(len(X) * train_share)
-    X_train = torch.tensor(X[:train_ind], dtype=torch.float32)  
-    X_test = torch.tensor(X[train_ind:], dtype=torch.float32)
-    B_train = torch.tensor(B[:train_ind], dtype=torch.float32) 
-    B_test = torch.tensor(B[train_ind:], dtype=torch.float32)
+    X_train, X_test = train_test_split(X, train_ind)
+    B_train, B_test = train_test_split(B, train_ind)
+    
 
     # Create datasets
     if model.model_name in ['NN+AE', 'NN+AE+D', 'NNpast']:
@@ -404,75 +416,24 @@ def generate_simple_dataloaders(L96, model, time_series_length=10_000, train_sha
     elif model.model_name in ['NN']:
         train_dataset = ShiftedCoordinatesDataset(X_train, B_train, model.n_neighbours, time_series_length)
         test_dataset = ShiftedCoordinatesDataset(X_test, B_test, model.n_neighbours, time_series_length)
+    elif model.model_name in ['NN+ODE']:
+        Z = L96.Z_ODE.values.astype(np.float32)[2000:]
+        Z_train, Z_test = train_test_split(Z.reshape(-1, 8), train_ind)
+        X_train, X_test = train_test_split(X.reshape(-1, 1), train_ind)
+        B_train, B_test = train_test_split(B.reshape(-1, 1), train_ind)
+        ZX_train = torch.hstack((Z_train, X_train))
+        ZX_test = torch.hstack((Z_test, X_test))
+        train_dataset = LatentDimsCoordinatesDataset(ZX_train, B_train)
+        test_dataset = LatentDimsCoordinatesDataset(ZX_test, B_test)
 
     # Create dataloaders
-    num_workers = 1
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=True, drop_last=False, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False, drop_last=False, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=True, drop_last=False, pin_memory=True, persistent_workers=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False, drop_last=False, pin_memory=True, persistent_workers=True)
 
     return train_loader, test_loader
 
 
 # Model training
-def train_model(x, x_test, b, b_test, model, num_epochs=5, weight_decay=0.0):
-    # Send to gpu if available
-    model = model.to(device)
-
-    criterion = nn.MSELoss()
-    lr = .007
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-    model.learning_rate = lr
-    model.weight_decay = weight_decay
-
-    # Make progress bar
-    best_R2 = float('-inf')
-    best_R2_epoch = 0
-    pbar = trange(num_epochs, desc="Training", ncols=150)
-
-    for epoch in pbar:
-        model.train()
-        test_loss, train_loss, R2 = 0, 0, 0
-
-        # Transpose 1-dimensional data
-        xT, bT = transpose_if_1d(x), transpose_if_1d(b)
-        b_pred = model.forward(xT)
-        loss = criterion(b_pred, bT)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        train_loss += loss.item()
-        
-        model.eval()
-        with torch.no_grad():
-            # Transpose 1-dimensional data
-            xT, bT = transpose_if_1d(x_test), transpose_if_1d(b_test)
-            b_pred = model.forward(xT)
-            loss = criterion(b_pred, bT)
-            R2 += R2Score().to(device)(b_pred, bT)
-            test_loss += loss.item()
-        
-        train_loss = train_loss #/ len(dataloader_train)
-        test_loss = test_loss #/ len(dataloader_test)
-        model.train_loss.append(train_loss)
-        model.test_loss.append(test_loss)
-        R2 = R2 #/ len(dataloader_test)
-        model.R2.append(R2)
-
-        # Update best R²
-        if R2 > best_R2:
-            best_R2 = R2
-            best_R2_epoch = epoch + 1
-
-        # Inline update
-        pbar.set_postfix({
-            "Train Loss": f"{train_loss:.4f}",
-            "Test Loss": f"{test_loss:.4f}",
-            "R²": f"{R2:.4f}",
-            "Best R²": f"{best_R2:.4f} @ {best_R2_epoch}"})
-    
-    return model
-
-
 def reconstruction_loss(x_batch, b_batch, model, criterion, reconstruction_criterion, alpha):
     b_pred, x_recon = model(x_batch)
     loss = alpha * criterion(b_pred, b_batch) + (1 - alpha) * reconstruction_criterion(x_recon, x_batch[:, :-1])
@@ -499,7 +460,10 @@ def process_neighbours(x_batch, b_batch, n_neighbours):
     return x_batch, b_batch
 
 
-def train_model_simple_dataloader(train_loader, test_loader, model, num_epochs=5, weight_decay=0.0):
+def process_nothing(x_batch, b_batch):
+    return x_batch.to(device), b_batch.to(device)
+
+def train_model(train_loader, test_loader, model, num_epochs=5, weight_decay=0.0):
     model = model.to(device)
     criterion = nn.MSELoss()
     lr = 0.007
@@ -522,13 +486,16 @@ def train_model_simple_dataloader(train_loader, test_loader, model, num_epochs=5
         loss_args = ()
     
     # Set preprocessing function
-    if model.model_name == 'NN':
+    if model.model_name in ['NN']:
         process_func = process_neighbours
         process_args = (model.n_neighbours,)
 
     elif model.model_name in ['NN+AE+D', 'NNpast', 'NN+AE']:
         process_func = process_past_timesteps
         process_args = (model.past_timesteps,)
+    elif model.model_name in ['NN+ODE']:
+        process_func = process_nothing
+        process_args = ()
 
     for epoch in pbar:
         model.train()
@@ -742,6 +709,7 @@ if __name__=='__main__':
 
     args = parser.parse_args()
     
+    
     m, tau, id = .001, .001, 20250903172407
     # m, tau, id = 1.0, 100.0, 20250903220204
     past_timesteps, latent_dims, n_neighbours = 1000, 0, 0
@@ -753,8 +721,8 @@ if __name__=='__main__':
             for w in [0.0, 1.e-6, 1.e-5, 1.e-4, 1.e-3, 1.e-2, 1.e-1, 1.]:        
                 model = NN(m, tau, past_timesteps, latent_dims, n_neighbours, model_name)
                 print(w, model.past_timesteps, model.model_name)
-                dataloader_train, dataloader_test = generate_simple_dataloaders(L96, model, train_share=.5)
-                model = train_model_simple_dataloader(dataloader_train, dataloader_test, model, num_epochs=100, weight_decay=w)
+                dataloader_train, dataloader_test = generate_dataloaders(L96, model, train_share=.5)
+                model = train_model(dataloader_train, dataloader_test, model, num_epochs=100, weight_decay=w)
                 model.save(additional_info=f'w={w}')
 
 
