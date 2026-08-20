@@ -1,14 +1,4 @@
-initX.npy
-initY.npy
-latent_space_data
-logs
-networks
-online_runs
+__pycache__/
 *.pyc
-outputs
-online_runs_old
-ODEs
-sim_Z.ipynb
-networks_old
-slurm-19508894.out
-slurm-19508928.out
+.ipynb_checkpoints/
+.DS_Store
