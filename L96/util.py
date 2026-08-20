@@ -2,6 +2,24 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 import os
+import xarray as xr
+
+
+def merge_time(model, timestamp, m, tau):
+    files = os.listdir(f'temp/{model}')
+    dss = []
+    for file in files:
+        if (f'm={m}' in file) and (f'tau={tau}' in file): 
+            ds = xr.open_dataset(f'temp/{model}/' + file)
+            if hasattr(ds, 'Z'):
+                ds = ds.drop_vars('Z')
+            dss.append(ds)
+
+    # Concatenate along time lazily
+    merged = xr.concat(dss, dim="time")
+
+    # Write to disk (actual computation happens here)
+    merged.to_netcdf(f"online_runs/{model}/m={m}_tau={tau}_t=50000MTU_{timestamp}.nc")
 
 
 def return_lagged_input_vector(X, m):

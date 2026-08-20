@@ -41,9 +41,9 @@ def learn_ODE(path_online_run, lmbda, deg, latent_dim, decoder, m=0.001, tau=0.0
                     differentiation_method=diff_method, 
                     optimizer=opt)
 
-    model.fit(x=z_train, u=x_train, t=.001, multiple_trajectories=True)
+    model.fit(x=z_train, u=x_train, t=.001)
     model.print()  
-    score = model.score(x=z_test, u=x_test, t=.001, multiple_trajectories=True)
+    score = model.score(x=z_test, u=x_test, t=.001)
     print('Model score: ', score, flush=True)
     
     if save:
@@ -60,7 +60,8 @@ def run_ODE_allongside_AE(path_AE, path_ODE):
     print(model_AE.m, model_AE.past_timesteps)
     model = ODE_Z(model_AE.m, model_AE.tau, model_AE.past_timesteps, model_AE.latent_dims, model_AE.n_neighbours, path_ODE, path_AE, path_AE, model_name='ODE_Z')
     save_path = model.save()
-    run_online(save_path, simulation_time=10_000)
+    path_online_run = run_online(save_path, simulation_time=10_000)
+    return path_online_run
 
 
 def retrain_NN(path_ODE, path_online_run, path_AE):
@@ -68,7 +69,7 @@ def retrain_NN(path_ODE, path_online_run, path_AE):
     model_AE = torch.load(path_AE, map_location=device, weights_only=False)  # should only be trained on gpu
     model_NN = NNpODE(model_AE.m, model_AE.tau, model_AE.past_timesteps, model_AE.latent_dims, model_AE.n_neighbours)
 
-    trainloader, testloader = generate_dataloaders(L96, model_NN, train_share=.5, batch_size=100_000, num_workers=64)
+    trainloader, testloader = generate_dataloaders(L96, model_NN, train_share=.5, batch_size=64_000, num_workers=64)
     model_NN = train_model(trainloader, testloader, model_NN, num_epochs=100, weight_decay=.001)
     path_NN = model_NN.save()
 
@@ -76,15 +77,14 @@ def retrain_NN(path_ODE, path_online_run, path_AE):
     model_ODE.save()
     
 
-
-
 if __name__=='__main__':
     # path_online = 'online_runs/NN+AE_latent_dims=8/input_lagg=1000/time=1000MTU_m=0.001_tau=0.001_w=0.0.nc'
     # path_online = 'online_runs/NN+AE_latent_dims=8/input_lagg=1000/time=1000MTU_m=0.001_tau=0.001_w=0.01.nc'
     # path_online = 'online_runs/NN+AE+D/input_lagg=1000/time=1000MTU_m=0.001_tau=0.001_w=0.001_for_ODE_less_data.nc'
     # path_online = 'online_runs/NN+AE+D/input_lagg=1000/time=10000MTU_m=0.001_tau=0.001_w=0.001_for_ODE_more_data.nc'
     # path_online = 'online_runs/NN+AE+D/latent_dims=8_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_t=10000MTU_20250908165421.nc'
-    # learn_ODE(path_online, lmbda=0.0, deg=1, latent_dim=8, m=0.001, tau=0.001, decoder=True, save=True)
+    path_online = 'online_runs/NN+AE+D/latent_dims=6_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_t=10000MTU_hyper_opt_w=1e-06_20260529122754.nc'
+    # learn_ODE(path_online, lmbda=0.0, deg=1, latent_dim=6, m=0.001, tau=0.001, decoder=True, save=True)
 
     # m, tau = 0.001, 0.001
     # for model, dec in zip(['NN+AE+D', 'NN+AE'], [True, False]):
@@ -94,10 +94,12 @@ if __name__=='__main__':
     #         path_online = glob.glob(path_online)[0]
     #         learn_ODE(path_online, lmbda=0.0, deg=1, latent_dim=latent_dim, m=m, tau=tau, decoder=dec, save=True)
 
-    # m, tau = 0.001, 0.001
-    m, tau = 1.0, 100.0
-    path_ODE = f'ODEs/m={m}_tau={tau}/dim=8_decoder=True_deg=1_lambda=0.0_finitedifference.npy'
-    path_online_run = glob.glob(f'online_runs/ODE_Z/latent_dims=8_past_timesteps=1000_n_neighbours=0/m={m}_tau={tau}_t=10000MTU_*')[0]
-    path_AE = glob.glob(f'networks/NN+AE+D/latent_dims=8_past_timesteps=1000_n_neighbours=0/m={m}_tau={tau}_w=0.001_*')[0]
+    m, tau = 0.001, 0.001
+    # m, tau = 1.0, 100.0
+    path_ODE = 'ODEs/m=0.001_tau=0.001/dim=6_decoder=True_deg=1_lambda=0.0_finitedifference.npy'
+    path_online_run = 'online_runs/ODE_Z/latent_dims=6_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_t=10000MTU_20260601115136.nc'
+    path_AE = 'hyper_opt/latent_dims=6/m=0.001_tau=0.001_hyper_opt_w=1e-06_20260529134345.pkl'
+    # retrain_NN(path_ODE, path_online_run, path_AE)
+    # path_online_run = run_ODE_allongside_AE(path_AE, path_ODE)
+    print('Retrain NN')
     retrain_NN(path_ODE, path_online_run, path_AE)
-    # run_ODE_allongside_AE(path_AE, path_ODE)

@@ -14,6 +14,8 @@ import itertools
 from torch.utils.data import Dataset
 import xarray as xr
 from datetime import datetime
+#from L96 import run_online
+import pysindy as ps
 
 
 # Load initial conditions for L96 model
@@ -44,6 +46,10 @@ class BaseParametrization:
         self.train_loss = []
         self.test_loss = []
         self.R2 = []
+
+        # predictability params
+        self.linear_predictability = None
+        self.nonlinear_predictability = None
     
     def save(self, additional_info=None):
         # Save the model
@@ -138,6 +144,33 @@ class NN(nn.Module, BaseParametrization):
 
         self.neural_net = nn.Sequential(
             nn.Linear(self.past_timesteps + self.n_neighbours + 1, self.nodes_per_layer),  #n_neighbours+1 as X_k is always passed on top
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
+            nn.ReLU(),
+            nn.Linear(self.nodes_per_layer, 1)
+        )
+    
+    def forward(self, x):
+        y_pred = self.neural_net(x)
+        return y_pred
+    
+
+class NN_predictability(nn.Module):
+    def __init__(self, latent_dims, n_forcings, nodes_per_layer=16):
+        nn.Module.__init__(self)
+        self.latent_dims = latent_dims
+        self.n_forcings = n_forcings
+        self.nodes_per_layer = nodes_per_layer
+        self.model_name = 'NN_predictability'
+
+        self.neural_net = nn.Sequential(
+            nn.Linear(self.latent_dims + self.n_forcings, self.nodes_per_layer), 
             nn.ReLU(),
             nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
             nn.ReLU(),
@@ -418,7 +451,7 @@ def generate_dataloaders(L96, model, time_series_length=10_000, train_share=.8, 
         test_dataset = ShiftedCoordinatesDataset(X_test, B_test, model.n_neighbours, time_series_length)
     elif model.model_name in ['NN+ODE']:
         Z = L96.Z_ODE.values.astype(np.float32)[2000:]
-        Z_train, Z_test = train_test_split(Z.reshape(-1, 8), train_ind)
+        Z_train, Z_test = train_test_split(Z.reshape(-1, model.latent_dims), train_ind)
         X_train, X_test = train_test_split(X.reshape(-1, 1), train_ind)
         B_train, B_test = train_test_split(B.reshape(-1, 1), train_ind)
         ZX_train = torch.hstack((Z_train, X_train))
@@ -706,7 +739,7 @@ if __name__=='__main__':
     parser.add_argument('--model_type', type=str, default='nn', help='Model type to use (e.g., nn, rf, svm)')
     parser.add_argument('--past_timesteps', type=int, default=1000, help='Number of past timesteps to consider')
     parser.add_argument('--latent_dims', type=int, default=5, help='Number of past timesteps to consider')
-
+    parser.add_argument('--weight_decay', type=float, default=0.0, help='Weight decay for regularization')
     args = parser.parse_args()
     
     
@@ -714,16 +747,16 @@ if __name__=='__main__':
     # m, tau, id = 1.0, 100.0, 20250903220204
     past_timesteps, latent_dims, n_neighbours = 1000, 0, 0
     
-    for m, tau, id in zip([.001, 1.0], [.001, 100.0], [20250903172407, 20250903220204]):
-        print('m, tau:', m, tau)
-        L96 = xr.open_dataset(f'online_runs/NO_PARAMETRIZATION/m={m}_tau={tau}_t=10000MTU_{id}.nc')
-        for past_timesteps, model_name, n_neighbours in zip([1000, 0, 0], ['NNpast', 'NN', 'NN'], [0, 0, 7]):
-            for w in [0.0, 1.e-6, 1.e-5, 1.e-4, 1.e-3, 1.e-2, 1.e-1, 1.]:        
-                model = NN(m, tau, past_timesteps, latent_dims, n_neighbours, model_name)
-                print(w, model.past_timesteps, model.model_name)
-                dataloader_train, dataloader_test = generate_dataloaders(L96, model, train_share=.5)
-                model = train_model(dataloader_train, dataloader_test, model, num_epochs=100, weight_decay=w)
-                model.save(additional_info=f'w={w}')
+    # for m, tau, id in zip([.001, 1.0], [.001, 100.0], [20250903172407, 20250903220204]):
+    #     print('m, tau:', m, tau)
+    #     L96 = xr.open_dataset(f'online_runs/NO_PARAMETRIZATION/m={m}_tau={tau}_t=10000MTU_{id}.nc')
+    #     for past_timesteps, model_name, n_neighbours in zip([1000, 0, 0], ['NNpast', 'NN', 'NN'], [0, 0, 7]):
+    #         for w in [0.0, 1.e-6, 1.e-5, 1.e-4, 1.e-3, 1.e-2, 1.e-1, 1.]:        
+    #             model = NN(m, tau, past_timesteps, latent_dims, n_neighbours, model_name)
+    #             print(w, model.past_timesteps, model.model_name)
+    #             dataloader_train, dataloader_test = generate_dataloaders(L96, model, train_share=.5)
+    #             model = train_model(dataloader_train, dataloader_test, model, num_epochs=100, weight_decay=w)
+    #             model.save(additional_info=f'w={w}')
 
 
 
@@ -742,17 +775,22 @@ if __name__=='__main__':
     # L96_subset._history_B = L96._history_B[:500_000]
     # L96 = L96_subset
 
-    # with open(f'online_runs/NO_PARAMETRIZATION/time=1000MTU_m={m}_tau={tau}.pkl', 'rb') as file:
+    # with open(f'online_runs/NO_PARAMETRIZATION/m=0.001_tau=0.001_t=10000MTU_20250903172407.nc', 'rb') as file:
     #     L96 = pickle.load(file)
+    L96 = xr.open_dataset(f'online_runs/NO_PARAMETRIZATION/m=0.001_tau=0.001_t=10000MTU_20250903172407.nc')
 
-    # train_loader, test_loader = generate_simple_dataloaders(L96, past_timesteps, time_series_length=10_000, batch_size=10)
-    # for w in [1.e-3]:
-    #     print(w)
-    #     model = NNpAEpD(n_neighbours=1, past_timesteps=past_timesteps, latent_dims=8)
-    #     model.memory_cutoff = m
-    #     model.tau = tau
-    #     model = train_model_NNpAEpD_simple_dataloader(train_loader, test_loader, model, past_timesteps, num_epochs=100, weight_decay=w)
-    #     save_model(model, w=w)
+    # for w in [0.0]:
+    w = 0.0
+    for pt in [10, 100, 1000]:
+        print('past_timesteps:', pt)
+        model = NNpAEpD(n_neighbours=0, past_timesteps=pt, latent_dims=args.latent_dims, m=m, tau=tau)
+        model.memory_cutoff = m
+        model.tau = tau
+        train_loader, test_loader = generate_dataloaders(L96, model, train_share=0.5, time_series_length=10_000, batch_size=64)
+
+        model = train_model(train_loader, test_loader, model, num_epochs=100, weight_decay=w)
+        model.save(additional_info=f'init_hyper_opt_pt={pt}')
+        
 
     # path_ODE = 'ODEs/dim=8_deg=1_lambda=0.0_finitedifference_more_data.npy'
     # path_NN = 'networks/NN+ODE/input_lagg=1000/m=0.001_tau=0.001_NN+ODE_faster.pkl'
