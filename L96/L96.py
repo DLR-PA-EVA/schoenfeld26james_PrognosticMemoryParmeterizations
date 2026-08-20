@@ -13,9 +13,9 @@ import torch.nn as nn
 from parametrizations import NN, NNpAE, NNpAEpD, ODE_Z, get_circular_neighbours
 from datetime import datetime
 
-# L96 implementation adapted from
+# L96 implementation adapted from Stephan Rasp
 # https://github.com/raspstephan/Lorenz-Online
-# with permission from the author
+# with permission from the author.
 class L962LvlMem(object):
     def __init__(self, K=8, J=32, h=1, F=20, c=10, b=10, dt=0.001, parametrization=None,
                  X_init=None, Y_init=None, tau=.001, m=.001, save_dt=0.001, memory_activation_func=None):
