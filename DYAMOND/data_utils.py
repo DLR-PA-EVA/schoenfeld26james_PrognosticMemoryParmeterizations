@@ -9,7 +9,7 @@ epsilon = 1.e-0
 
 
 # Data loading
-def load_grid(grid_path='/work/bd1179/b309297/DYAMOND_experiment/DYAMOND/icon_grid_0019_R02B05_G.nc'):
+def load_grid(grid_path='/work/bd1179/b309297/schoenfeld26james_PrognosticMemoryParmeterizations/DYAMOND/icon_grid_0019_R02B05_G.nc'):
     grid = xr.open_dataset(grid_path)
     grid = grid.assign_coords(
         clon=("cell", np.rad2deg(grid.clon.values)),
@@ -25,7 +25,7 @@ def load_ds(ds_path='merged_15min_full_ICON-NWP-2km_DW-ATM_r1i1p1f1_2d_gn_202001
     )
     return ds
 
-def load_DYAMOND_data_bool_land_mask(grid_path='/work/bd1179/b309297/DYAMOND_experiment/DYAMOND/icon_grid_0019_R02B05_G.nc', 
+def load_DYAMOND_data_bool_land_mask(grid_path='/work/bd1179/b309297/schoenfeld26james_PrognosticMemoryParmeterizations/DYAMOND/icon_grid_0019_R02B05_G.nc', 
                       ds_path='merged_15min_ICON-NWP-2km_DW-ATM_r1i1p1f1_2d_gn_20200120000000-20200301000000_R02B05.nc'):
     grid = load_grid(grid_path)
     ds = load_ds(ds_path)
@@ -55,7 +55,7 @@ def load_DYAMOND_data_bool_land_mask(grid_path='/work/bd1179/b309297/DYAMOND_exp
     ds = ds.drop_dims('height')
     return ds
 
-def load_DYAMOND_data(grid_path='/work/bd1179/b309297/DYAMOND_experiment/DYAMOND/icon_grid_0019_R02B05_G.nc', 
+def load_DYAMOND_data(grid_path='/work/bd1179/b309297/schoenfeld26james_PrognosticMemoryParmeterizations/DYAMOND/icon_grid_0019_R02B05_G.nc', 
                       ds_path='merged_15min_full_ICON-NWP-2km_DW-ATM_r1i1p1f1_2d_gn_20200120000000-20200301000000_R02B05.nc',
                       ext_par_path = '/work/pd1295/ICON/grids/public/mpim/0019/extpar.2016/r0001/icon_extpar_grid_0019_R02B05_G_20180829.nc'):
     grid = load_grid(grid_path)
