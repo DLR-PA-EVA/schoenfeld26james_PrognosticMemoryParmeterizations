@@ -1,11 +1,8 @@
 #!/bin/bash
-
-# Construct job name
-job_name="L96_online_run"
-
 #SBATCH --job-name="L96_ML"                # Job name
 #SBATCH --output=logs/L96_online_run_%j.out      # Stdout and stderr go to this file
 
+# This script runs (parameterized) L96 simulations
 
 # Load necessary modules 
 # module load pytorch
