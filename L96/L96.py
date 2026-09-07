@@ -536,8 +536,9 @@ if __name__=='__main__':
     #model_path = 'm=0.001_tau=0.001_hyper_opt_w=1e-06_20260528105809.pkl'
     #path = 'networks/NN+AE+D/latent_dims=6_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_hyper_opt_w=1e-06_20260528105809.pkl'
     #path = 'networks/NN+AE+D/latent_dims=6_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_hyper_opt_w=1e-05_20260528105037.pkl'
-    path = 'networks/ODE_Z_online/latent_dims=6_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_20260601162804.pkl'
+    #path = 'networks/ODE_Z_online/latent_dims=6_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_20260601162804.pkl'
     #path = f'networks/NN+AE+D/latent_dims={args.latent_dims}_past_timesteps=1000_n_neighbours=0/' + model_path
-    #model = torch.load(path, map_location='cpu', weights_only=False)  
-    # run_online(path, simulation_time=50_000, m=.001, tau=.001, additional_info=f'hyper_opt_w={model.weight_decay}')
-    make_weather_runs(500, path, m, tau)
+    path = 'networks/NN/latent_dims=0_past_timesteps=0_n_neighbours=7/m=0.001_tau=0.001_w=0.0_20250905155154.pkl'
+    model = torch.load(path, map_location='cpu', weights_only=False)  
+    run_online(path, simulation_time=50_000, m=.001, tau=.001, additional_info=f'hyper_opt_w={model.weight_decay}')
+    # make_weather_runs(500, path, m, tau)
