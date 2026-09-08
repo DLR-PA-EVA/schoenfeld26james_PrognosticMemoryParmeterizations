@@ -179,6 +179,7 @@ def train_model(train_loader, test_loader, val_loader, model, skip, SS_tot, resc
         model.precip_val_loss.append(avg_precip_loss)
         model.recon_val_loss.append(avg_recon_loss)
         model.val_loss.append(avg_val_loss)
+        # Compute custom R2 score for monitoring only
         R2 = 1 - SS_res / SS_tot
         model.R2.append(R2)
 
