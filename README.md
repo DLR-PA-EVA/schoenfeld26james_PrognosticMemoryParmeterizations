@@ -23,7 +23,7 @@ Once simulation data was recreated, make sure to adjust the paths in the evaluat
 The DYAMOND data is available from the DKRZ tape archieve. Please refere to the DYAMOND Data Library documentation to get access. Once the high-resolution data is accessible you can use the scripts [`preprocessing_scripts`](preprocessing_scripts) to coarse grain the data. 
 
 ### training:
-After obtaining the training data you can use `training_gpu.py` to train your own parameterization and to recreate the predicted latent space variables and precipitation data. For joint training of ODE-coefficients and NN-parameterization you can refer to `train_ODE_and_parameterization.py`. All trained parameterizations for the paper are given in [`hyper_opt_precip`](hyper_opt_precip) and [`initial_pt_hyper_opt`](initial_pt_hyper_opt).
+After obtaining the training data you can use `training_gpu.py` to train your own parameterization and to recreate the predicted latent space variables. To generate parameterization predictions of precipitaion use the `predict_precip.ipynb` notebook. For joint training of ODE-coefficients and NN-parameterization you can refer to `train_ODE_and_parameterization.py`. All trained parameterizations for the paper are given in [`hyper_opt_precip`](hyper_opt_precip) and [`initial_pt_hyper_opt`](initial_pt_hyper_opt).
 
 ### evaluation:
 Figures 2, 6, 7 can be reproduced with the notebook `plots_paper.ipynb` and Figure 5 with `evaluate_Xi_coefficients.ipynb`. For Figures 6, 7 you first need to recreate the precipitation predictions of the parameterizations. 
