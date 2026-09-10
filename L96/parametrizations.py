@@ -66,74 +66,10 @@ class BaseParametrization:
         torch.save(self, save_path)
         
         return save_path
-
-
-class NNpAE(nn.Module, BaseParametrization):
-    def __init__(self, m, tau, past_timesteps, latent_dims, n_neighbours, nodes_per_layer=16):
-        nn.Module.__init__(self)
-        BaseParametrization.__init__(self, m=m, tau=tau, past_timesteps=past_timesteps,
-                         latent_dims=latent_dims, n_neighbours=n_neighbours)
-
-        self.nodes_per_layer = nodes_per_layer
-        self.model_name = 'NN+AE'
-
-        self.encoder = nn.Sequential(
-            nn.Linear(self.past_timesteps, 32),
-            nn.ReLU(),
-            nn.Linear(32, 16),
-            nn.ReLU(),
-            nn.Linear(16, 12),
-            nn.ReLU(),
-            nn.Linear(12, self.latent_dims)
-        )
-        self.neural_net = nn.Sequential(
-            nn.Linear(latent_dims + 1, self.nodes_per_layer),
-            nn.ReLU(),
-            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
-            nn.ReLU(),
-            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
-            nn.ReLU(),
-            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
-            nn.ReLU(),
-            nn.Linear(self.nodes_per_layer, self.nodes_per_layer),
-            nn.ReLU(),
-            nn.Linear(self.nodes_per_layer, 1)
-        )
-
-    def forward(self, x):
-        x_past = x[:, :-1]
-        x_present = torch.unsqueeze(x[:, -1], 1)
-
-        latent_space = self.encoder(x_past)
-        x_nn = torch.cat((latent_space, x_present), dim=1)
-        y_pred = self.neural_net(x_nn)
-        return y_pred
    
 
-class NNpast(nn.Module, BaseParametrization):
-    def __init__(self, m, tau, past_timesteps, latent_dims, n_neighbours, nodes_per_layer=16):
-        nn.Module.__init__(self)
-        BaseParametrization.__init__(self, m=m, tau=tau, past_timesteps=past_timesteps,
-                                     latent_dims=latent_dims, n_neighbours=n_neighbours)
-        self.nodes_per_layer = nodes_per_layer
-        self.model_name = 'FCNN'
-        # Layers
-        self.linear1 = nn.Linear(past_timesteps + 1, self.nodes_per_layer)  # number of past time steps the model receives as input
-        self.linear2 = nn.Linear(self.nodes_per_layer, self.nodes_per_layer)
-        self.linear3 = nn.Linear(self.nodes_per_layer, self.nodes_per_layer)
-        self.linear4 = nn.Linear(self.nodes_per_layer, self.nodes_per_layer)
-        self.linear5 = nn.Linear(self.nodes_per_layer, 1)  
-
-    def forward(self, x):
-        x = self.relu(self.linear1(x))
-        x = self.relu(self.linear2(x))
-        x = self.relu(self.linear3(x))
-        x = self.relu(self.linear4(x))
-        x = self.linear5(x)
-        return x
-    
-
 class NN(nn.Module, BaseParametrization):
+    # Baseline Neural Network Parameterization no Prognostics
     def __init__(self, m, tau, past_timesteps, latent_dims, n_neighbours, model_name, nodes_per_layer=16):
         nn.Module.__init__(self)
         BaseParametrization.__init__(self, m=m, tau=tau, past_timesteps=past_timesteps,
@@ -162,6 +98,7 @@ class NN(nn.Module, BaseParametrization):
     
 
 class NN_predictability(nn.Module):
+    # Neural Network to estimate the latent space predictability tensor
     def __init__(self, latent_dims, n_forcings, nodes_per_layer=16):
         nn.Module.__init__(self)
         self.latent_dims = latent_dims
@@ -189,6 +126,7 @@ class NN_predictability(nn.Module):
 
 
 class NNpODE(nn.Module, BaseParametrization):
+    # Neural Network Parameterization plus symbolic Prognostics
     def __init__(self, m, tau, past_timesteps, latent_dims, n_neighbours, nodes_per_layer=16):
         nn.Module.__init__(self)
         BaseParametrization.__init__(self, m=m, tau=tau, past_timesteps=past_timesteps,
@@ -217,6 +155,7 @@ class NNpODE(nn.Module, BaseParametrization):
 
 
 class NNpAEpD(nn.Module, BaseParametrization):
+    # Neural Network Parameterization plus Autoencoder Prognostics
     def __init__(self, m, tau, past_timesteps, latent_dims, n_neighbours, nodes_per_layer=16):
         nn.Module.__init__(self)
         BaseParametrization.__init__(self, m=m, tau=tau, past_timesteps=past_timesteps,
