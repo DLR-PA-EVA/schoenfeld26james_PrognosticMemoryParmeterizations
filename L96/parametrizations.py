@@ -18,10 +18,6 @@ from datetime import datetime
 import pysindy as ps
 
 
-# Load initial conditions for L96 model
-initX, initY = np.load('./initX.npy'), np.load('./initY.npy')
-np.random.seed(123)
-
 # Set device to gpu if avaible, else to cpu
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -435,6 +431,7 @@ def process_neighbours(x_batch, b_batch, n_neighbours):
 def process_nothing(x_batch, b_batch):
     return x_batch.to(device), b_batch.to(device)
 
+
 def train_model(train_loader, test_loader, model, num_epochs=5, weight_decay=0.0):
     model = model.to(device)
     criterion = nn.MSELoss()
@@ -674,107 +671,26 @@ def sensitivity_experiment(pt, models=['baseline_nn', 'nn', 'NN+AE'], latent_dim
 
 
 if __name__=='__main__':
+    # Training example that trains the autoencoder parameterization with the found hyperparameters
+    # Parse model parameters e.g. from a run script
     parser = argparse.ArgumentParser(description='Run L96 sensitivity experiment')
-    parser.add_argument('--model_type', type=str, default='nn', help='Model type to use (e.g., nn, rf, svm)')
     parser.add_argument('--past_timesteps', type=int, default=1000, help='Number of past timesteps to consider')
-    parser.add_argument('--latent_dims', type=int, default=5, help='Number of past timesteps to consider')
-    parser.add_argument('--weight_decay', type=float, default=0.0, help='Weight decay for regularization')
+    parser.add_argument('--latent_dims', type=int, default=6, help='Number of past timesteps to consider')
+    parser.add_argument('--weight_decay', type=float, default=1.e-6, help='Weight decay for regularization')
     args = parser.parse_args()
-    
-    
-    m, tau, id = .001, .001, 20250903172407
-    # m, tau, id = 1.0, 100.0, 20250903220204
-    past_timesteps, latent_dims, n_neighbours = 1000, 0, 0
-    
-    # for m, tau, id in zip([.001, 1.0], [.001, 100.0], [20250903172407, 20250903220204]):
-    #     print('m, tau:', m, tau)
-    #     L96 = xr.open_dataset(f'online_runs/NO_PARAMETRIZATION/m={m}_tau={tau}_t=10000MTU_{id}.nc')
-    #     for past_timesteps, model_name, n_neighbours in zip([1000, 0, 0], ['NNpast', 'NN', 'NN'], [0, 0, 7]):
-    #         for w in [0.0, 1.e-6, 1.e-5, 1.e-4, 1.e-3, 1.e-2, 1.e-1, 1.]:        
-    #             model = NN(m, tau, past_timesteps, latent_dims, n_neighbours, model_name)
-    #             print(w, model.past_timesteps, model.model_name)
-    #             dataloader_train, dataloader_test = generate_dataloaders(L96, model, train_share=.5)
-    #             model = train_model(dataloader_train, dataloader_test, model, num_epochs=100, weight_decay=w)
-    #             model.save(additional_info=f'w={w}')
+    m, tau = .001, .001  # Those are legacy variables you probably never want to change 
 
+    # Load training data
+    L96 = xr.open_dataset(f'online_runs/NO_PARAMETRIZATION/m=0.001_tau=0.001_t=10000MTU_20250903172407.nc')  # Point this to your reference simulation
 
+    # Init model
+    model = NNpAEpD(n_neighbours=0, past_timesteps=args.past_timesteps, latent_dims=args.latent_dims, m=m, tau=tau)
+    model.memory_cutoff = m
+    model.tau = tau
 
-    #print(args.model_type, args.past_timesteps, args.latent_dims)
-    #sensitivity_experiment(args.past_timesteps, models=['baseline_nn', 'nn', 'NN+AE'])
-    #sensitivity_experiment(args.past_timesteps, models=[args.model_type], latent_dims=None)
-    #sensitivity_experiment(1000, ['NN+AE'], latent_dims=1)
+    # Preprocess training data
+    train_loader, test_loader = generate_dataloaders(L96, model, train_share=0.5, time_series_length=10_000, batch_size=64)
 
-
-    # m, tau = 0.001, 0.001
-    # past_timesteps = 1000    
-    # with open(f'online_runs/NO_PARAMETRIZATION/time=10000000_m={m}_tau={tau}.pkl', 'rb') as file:
-    #     L96 = pickle.load(file)
-    # L96_subset = L962LvlMem(m=m, tau=tau)
-    # L96_subset._history_X = L96._history_X[:500_000]
-    # L96_subset._history_B = L96._history_B[:500_000]
-    # L96 = L96_subset
-
-    # with open(f'online_runs/NO_PARAMETRIZATION/m=0.001_tau=0.001_t=10000MTU_20250903172407.nc', 'rb') as file:
-    #     L96 = pickle.load(file)
-    L96 = xr.open_dataset(f'online_runs/NO_PARAMETRIZATION/m=0.001_tau=0.001_t=10000MTU_20250903172407.nc')
-
-    # for w in [0.0]:
-    w = 0.0
-    for pt in [10, 100, 1000]:
-        print('past_timesteps:', pt)
-        model = NNpAEpD(n_neighbours=0, past_timesteps=pt, latent_dims=args.latent_dims, m=m, tau=tau)
-        model.memory_cutoff = m
-        model.tau = tau
-        train_loader, test_loader = generate_dataloaders(L96, model, train_share=0.5, time_series_length=10_000, batch_size=64)
-
-        model = train_model(train_loader, test_loader, model, num_epochs=100, weight_decay=w)
-        model.save(additional_info=f'init_hyper_opt_pt={pt}')
-        
-
-    # path_ODE = 'ODEs/dim=8_deg=1_lambda=0.0_finitedifference_more_data.npy'
-    # path_NN = 'networks/NN+ODE/input_lagg=1000/m=0.001_tau=0.001_NN+ODE_faster.pkl'
-    # path_AE = 'networks/NN+AE+D/input_lagg=1000/m=0.001_tau=0.001_NN+AE+D_w=0.001_for_ODE_more_data.pkl'
-    # ode = ODE_Z(path_ODE, path_AE, path_NN, model_name='ODE_Z_online', K=8, latent_dims=8, past_timesteps=1000, dt=0.001)
-    # save_model(ode)
-
-
-    #create_latent_space_trainig_data(m=.001, tau=.001, past_timesteps=1000, latent_dims=5, num_samples=1_000)
-    # create_latent_space_trainig_data_multi_trajectory(m=.001, tau=.001, past_timesteps=1000, latent_dims=1)
-
-    # train_loader, test_loader = generate_simple_dataloaders(L96, past_timesteps, batch_size=10_000)
-    # X, B = torch.tensor(L96.history.X.values.T, dtype=torch.float32), torch.tensor(L96.history.B.values.T, dtype=torch.float32)
-    # train_loader, test_loader = create_train_test_loaders(X, B, past_timesteps, train_share=0.8, batch_size=4096, num_workers=0
-    # model = train_model_NNpAEpD_simple_dataloader(train_loader, test_loader, model, past_timesteps, num_epochs=30, weight_decay=w)
-
-    # Data
-    '''
-    L96 = L96TwoLevelMemory(X_init=initX, Y_init=initY, save_dt=.001, memory_cutoff=.1, memory_tau=.001, memory_activation_func=None)
-    L96.iterate(10)
-    past_timesteps = 1000
-    latent_dims = 5
-
-    # # AE
-    # X_train, X_test = generate_data_autoencoder(L96, past_timesteps=past_timesteps)
-    # ae_model = Autoencoder(past_timesteps=past_timesteps, latent_dims=latent_dims)
-    # ts = time.time()
-    # ae_model = train_model(X_train, X_test, X_train, X_test, ae_model, num_epochs=200)
-    # print('t:', time.time() - ts)
-
-    # # Model
-    # X_train, X_test, B_train, B_test = generate_data_nn_autoencoder(L96, past_timesteps=past_timesteps, model_autoencoder=ae_model)
-    # nn_model = FCNN(past_timesteps=latent_dims, nodes_per_layer=50)
-
-    # # Training
-    # ts = time.time()
-    # train_model(X_train, X_test, B_train, B_test, nn_model, num_epochs=200)
-    # print('t:', time.time() - ts)
-
-    # Model
-    X_train, X_test, B_train, B_test = generate_data(L96, past_timesteps=past_timesteps)
-    nn_model = FCNN(past_timesteps=past_timesteps, nodes_per_layer=140)
-
-    # # Training
-    ts = time.time()
-    train_model(X_train, X_test, B_train, B_test, nn_model, num_epochs=200)
-    print('t:', time.time() - ts)'''
-
+    # Train model, set your training hyperparameters
+    model = train_model(train_loader, test_loader, model, num_epochs=100, weight_decay=args.weight_decay)
+    model.save()
