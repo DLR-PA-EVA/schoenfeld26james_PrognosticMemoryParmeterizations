@@ -9,13 +9,10 @@ import os
 from pathlib import Path
 import argparse
 from tqdm import tqdm, trange
-import pickle
 import itertools
 from torch.utils.data import Dataset
 import xarray as xr
 from datetime import datetime
-#from L96 import run_online
-import pysindy as ps
 
 
 # Set device to gpu if avaible, else to cpu

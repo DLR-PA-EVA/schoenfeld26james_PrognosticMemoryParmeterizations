@@ -4,13 +4,9 @@ from tqdm import tqdm
 import torch
 from pathlib import Path
 import os
-import pickle
-import torch
-import argparse
 torch.set_num_threads(1)   # limit intra-op threads
 torch.set_num_interop_threads(1)  # limit inter-op parallelism
-import torch.nn as nn
-from parametrizations import NN, NNpAE, NNpAEpD, ODE_Z, get_circular_neighbours
+from parametrizations import NN, NNpAEpD, ODE_Z, get_circular_neighbours
 from datetime import datetime
 
 # L96 implementation adapted from Stephan Rasp
@@ -406,139 +402,15 @@ def make_weather_runs(nruns, model_path, m, tau):
 
 
 if __name__=='__main__':
-    #L96 = L962LvlMem(X_init=None, Y_init=None, save_dt=.005, dt=.001, K=8, J=32, h=1, F=20, b=10, c=10)
-    #MTUs = 100_000
-    #L96.iterate(MTUs)
-    #print(L96.time_weights)
-    #np.save(f'/work/bd1179/b309297/X_{MTUs}.npy', L96.history.X.values)
-    #np.save(f'/work/bb1153/b309297/B_{MTUs}.npy', L96.history.B.values)
+    path = None  # This will create the reference run
 
-    parser = argparse.ArgumentParser(description='Run L96 sensitivity experiment')
-    parser.add_argument('--latent_dims', type=int, default='8')
-    args = parser.parse_args()
-
-    # if args.model_type == 'nn':
-    #     path = 'networks/nn/input_lagg=1000/m=0.001_tau=0.001_nn.pkl'
-    # elif args.model_type == 'baseline_nn':
-    #     path = 'networks/baseline_nn/input_lagg=0/m=0.001_tau=0.001_baseline_nn.pkl'
-
-    # # path = 'networks/nn/input_lagg=1000/m=0.001_tau=0.001_nn.pkl'
-    # # path = 'networks/NN+AE_latent_dims=5/input_lagg=1000/m=0.001_tau=0.001_NN+AE.pkl'
-    # path = 'networks/baseline_nn/input_lagg=0/m=0.001_tau=0.001_baseline_nn.pkl'
-
-    # print(path)
-    # path = 'networks/NN+AE_latent_dims=3/input_lagg=1000/m=0.001_tau=0.001_NN+AE.pkl'
-    # initX = np.load('initX.npy')[:8].astype(np.float32)
-    # initY = np.load('initY.npy')[:8*32].astype(np.float32)
-    # np.random.seed(123)
-
-    # past_timesteps = int(re.search(r'input_lagg=(\d+)', path).group(1))
-    # m = float(re.search(r'm=([\d.]+)', path).group(1))
-    # tau = float(re.search(r'tau=([\d.]+)', path).group(1))
-    # model = torch.load(path, weights_only=False, map_location='cpu')
-
-    # L96 = L962LvlMemZ(X_init=initX, Y_init=initY, save_dt=.001, m=0.001, tau=0.001, 
-    #                   parametrization=model.neural_net, encoder=model.encoder, 
-    #                   latent_dims=model.latent_dims, past_timesteps=past_timesteps)
-    # L96.iterate(5)
-    # print(L96.history)
-    # L96.parametrization = None
-    # save_L96(L96)
-
-
-    # Run NN+AE with full information online while saving Z for ODE learning
-    #path = 'networks/phi_1_1.0_8_m=0.001_tau=0.001_20250717104927.pkl' # Phi_1,1,8
-    #path = 'networks/phi_0_0.0_8_m=None_tau=None_20250717112413.pkl'  # Phi_0,0,8
-    #print(path)
-    #run_NNpAE_online(path)
-    #run_online([0.001], [0.001], ['NN+AE+D'], past_timesteps=1000, simulation_time=10_000)
-    # run_online([0.001], [0.001], ['ODE_Z'], past_timesteps=1000, simulation_time=10_000)
-
-
-    # initX = np.load('initX.npy')[:8]
-    # initY = np.load('initY.npy')[:8*32]
-    # np.random.seed(123)
-    # ms = [np.logspace(-3, 0, 10)[-1]]
-    # taus = [np.logspace(-3, 2, 10)[-1]]
-    # for m, tau in zip(ms, taus):
-    #     print(m, tau)
-    #     run_online(None, 10_000, m, tau)
-    # print(ms, taus)
-    # for m, tau in zip(ms, taus):
-    #     L96 = L962LvlMem(X_init=initX, Y_init=initY, save_dt=.001, m=m, tau=tau, memory_activation_func=None)
-    #     L96.iterate(10_000)
-    #     save_L96(L96)
-
-    #run_online(ms, taus, models=args.model_type, past_timesteps=1000)
-
-    # paths_weak_kernel = ['networks/NN+AE+D/latent_dims=8_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905173346.pkl', 
-    #                      'networks/NN+AE+D/latent_dims=5_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905163313.pkl',
-    #                      'networks/NN+AE+D/latent_dims=3_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905153331.pkl',
-    #                      'networks/NN+AE/latent_dims=3_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905150348.pkl',
-    #                      'networks/NN+AE/latent_dims=5_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905152851.pkl',
-    #                      'networks/NN+AE/latent_dims=8_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905155405.pkl',
-    #                      'networks/NN/latent_dims=0_past_timesteps=0_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905153939.pkl',
-    #                      'networks/NN/latent_dims=0_past_timesteps=0_n_neighbours=7/m=0.001_tau=0.001_w=0.001_20250905161835.pkl',
-    #                      'networks/NNpast/latent_dims=0_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_w=0.001_20250905152318.pkl'
-    #                      ]
-    # paths_strong_kernel = ['networks/NN+AE+D/latent_dims=8_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905173228.pkl',
-    #                        'networks/NN+AE+D/latent_dims=5_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905163102.pkl',
-    #                        'networks/NN+AE+D/latent_dims=3_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905153037.pkl',
-    #                        'networks/NN+AE/latent_dims=3_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905150650.pkl',
-    #                        'networks/NN+AE/latent_dims=5_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905153144.pkl',
-    #                        'networks/NN+AE/latent_dims=8_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905155709.pkl',
-    #                        'networks/NN/latent_dims=0_past_timesteps=0_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905170515.pkl',
-    #                        'networks/NN/latent_dims=0_past_timesteps=0_n_neighbours=7/m=1.0_tau=100.0_w=0.001_20250905174304.pkl',
-    #                        'networks/NNpast/latent_dims=0_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905164945.pkl'
-    #                        ]
-
-    # for path in paths_weak_kernel[1:]:
-    #     run_online(path, 10_000)
+    # Here you can point to a parameterization and run it online
+    # path = 'networks_paper/M=1000_dz=6_w=1e-06_20260529142124.pkl'  # Our best model
     
-    m, tau = 0.001, 0.001
-    paths8 = ['m=0.001_tau=0.001_hyper_opt_w=1e-06_20260528105808.pkl',
-                'm=0.001_tau=0.001_hyper_opt_w=0.001_20260528103552.pkl',
-                'm=0.001_tau=0.001_hyper_opt_w=0.0001_20260528104318.pkl',
-                'm=0.001_tau=0.001_hyper_opt_w=0.0_20260528110511.pkl',
-                'm=0.001_tau=0.001_hyper_opt_w=1e-05_20260528105035.pkl']
+    # Long time online simulation
+    # This will save the data in chunks into the temp directory to save RAM
+    # Use the merge_time function from util to merge files into a single .nc file (see main in util) 
+    run_online(path, simulation_time=50_000, m=.001, tau=.001)  
     
-    paths6 = ['m=0.001_tau=0.001_hyper_opt_w=0.0_20260528110521.pkl',
-                'm=0.001_tau=0.001_hyper_opt_w=0.0001_20260528104329.pkl',
-                'm=0.001_tau=0.001_hyper_opt_w=0.001_20260528103600.pkl',
-                'm=0.001_tau=0.001_hyper_opt_w=1e-05_20260528105037.pkl',
-                'm=0.001_tau=0.001_hyper_opt_w=1e-06_20260528105809.pkl']
-    
-    paths4 = ['m=0.001_tau=0.001_hyper_opt_w=0.0_20260528110523.pkl',
-                'm=0.001_tau=0.001_hyper_opt_w=0.001_20260528103557.pkl',
-                'm=0.001_tau=0.001_hyper_opt_w=1e-06_20260528105809.pkl',
-                'm=0.001_tau=0.001_hyper_opt_w=0.0001_20260528104326.pkl',
-                'm=0.001_tau=0.001_hyper_opt_w=1e-05_20260528105032.pkl']
-
-    paths2 = ['m=0.001_tau=0.001_hyper_opt_w=0.0001_20260528104332.pkl',
-                'm=0.001_tau=0.001_hyper_opt_w=0.0_20260528110528.pkl',
-                'm=0.001_tau=0.001_hyper_opt_w=0.001_20260528103559.pkl',
-                'm=0.001_tau=0.001_hyper_opt_w=1e-05_20260528105041.pkl',
-                'm=0.001_tau=0.001_hyper_opt_w=1e-06_20260528105817.pkl']
-    
-    paths = {2: paths2, 4: paths4, 6: paths6, 8: paths8}
-
-    # m, tau = 1.0, 100.0
-    # path1 = 'networks/NN/latent_dims=0_past_timesteps=0_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905170515.pkl'
-    # path2 = 'networks/ODE_Z_online/latent_dims=8_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_20250912143641.pkl'
-    # path3 = 'networks/NN/latent_dims=0_past_timesteps=0_n_neighbours=7/m=1.0_tau=100.0_w=0.001_20250905174304.pkl'
-    # path4 = 'networks/NN+AE+D/latent_dims=8_past_timesteps=1000_n_neighbours=0/m=1.0_tau=100.0_w=0.001_20250905173228.pkl'
-    # run_online(path1, 50_000,m, tau, seed=123)
-
-    # for path in [path1, path2]:
-    #     make_weather_runs(500, path, m, tau)
-    print('latent dims: ', args.latent_dims)
-    #for model_path in paths[args.latent_dims]:
-    #model_path = 'm=0.001_tau=0.001_hyper_opt_w=1e-06_20260528105809.pkl'
-    #path = 'networks/NN+AE+D/latent_dims=6_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_hyper_opt_w=1e-06_20260528105809.pkl'
-    #path = 'networks/NN+AE+D/latent_dims=6_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_hyper_opt_w=1e-05_20260528105037.pkl'
-    #path = 'networks/ODE_Z_online/latent_dims=6_past_timesteps=1000_n_neighbours=0/m=0.001_tau=0.001_20260601162804.pkl'
-    #path = f'networks/NN+AE+D/latent_dims={args.latent_dims}_past_timesteps=1000_n_neighbours=0/' + model_path
-    path = 'networks/NN/latent_dims=0_past_timesteps=0_n_neighbours=7/m=0.001_tau=0.001_w=0.0_20250905155154.pkl'
-    model = torch.load(path, map_location='cpu', weights_only=False)  
-    run_online(path, simulation_time=50_000, m=.001, tau=.001, additional_info=f'hyper_opt_w={model.weight_decay}')
-    # make_weather_runs(500, path, m, tau)
+    # Weather runs
+    # make_weather_runs(nruns=500, model_path=path, m=.001, tau=.001)  

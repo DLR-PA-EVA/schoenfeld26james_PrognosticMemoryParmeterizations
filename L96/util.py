@@ -226,7 +226,6 @@ def training_history_overview(past_timesteps, n_samples=1):
 
 
 if __name__=='__main__':
-    pass
-
-
-
+    model_name = 'NO_PARAMETRIZATION'  # Set model_name according to what shows up in your temp folder
+    timestamp = '20260910120000'  # Set a timestamp or something to uniquely identify your model
+    merge_time(model_name, timestamp, m=0.001, tau=0.001)
