@@ -106,12 +106,6 @@ def load_regional_ds(region, surface):
     ds = ds[['huss', 'prw', 'tas', 'ts', 'hfss', 'hfls', 'is_land', 'precip']].to_array()
     ds = ds[:,:,mask]
     
-    # Standardize except is_land and precip 
-    # mean = xr.load_dataarray('merged_DYAMOND_variable_mean.nc')
-    # std = xr.load_dataarray('merged_DYAMOND_variable_std.nc')
-    # mean = xr.load_dataarray('merged_DYAMOND_variable_mean_unleaked.nc')
-    # std = xr.load_dataarray('merged_DYAMOND_variable_std_unleaked.nc')
-    # ds = (ds - mean) / std
     ds = ds.to_numpy().astype(np.float32)
     return ds#, mean, std
 
@@ -161,7 +155,6 @@ class CoordDataset(Dataset):
         return idx
     
 def get_dataloader(ds, tstart, train_ind, val_ind, batch_size=8, num_workers=0, shuffle_train=True):
-    # Compute mean and std on train set only **This is what I want to do but it blows up reconstruction loss**
     # ds shape: [features, time, coords] -> compute over time and coords (dims 1 and 2)
     dataset_train, dataset_val, dataset_test = CoordDataset(ds, tstart, train_ind), CoordDataset(ds, train_ind, val_ind), CoordDataset(ds, val_ind, None)
     

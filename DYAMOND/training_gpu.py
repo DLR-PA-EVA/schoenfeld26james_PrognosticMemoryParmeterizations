@@ -34,7 +34,7 @@ def prerprocess_AE(X, coords, past_timesteps, Nf, tstart, tend, memory_indices):
     return x_present, x_past, y_batch
 
 
-def preprocess_thresholded(X, coords, past_timesteps, Nf, tstart, tend, precip_threshold):  # TODO: Compute precip threshold in standardized units
+def preprocess_thresholded(X, coords, past_timesteps, Nf, tstart, tend, precip_threshold): 
     """
     X: (Nfeatures, NT, Ncoords)
     Returns:
@@ -506,6 +506,7 @@ if __name__=='__main__':
     n_epochs = 150
     memory_indices = [0, 1, 2, 3, 4, 5]
 
+    # Model Training
     for w in [wd]: 
         lr = .001
         alpha = .5 

@@ -3,26 +3,27 @@ import pysindy as ps
 import matplotlib.pyplot as plt
 import pickle
 
-# XZ_train = np.load('Z_data/ConvNN+AE+D/n_features=6_memory_indices=[0, 1, 2, 3, 4, 5]_latent_dims=5_past_timesteps=3/20251112125355_Ztrain_ConvNN+AE+D_tp=3.npy')
-# XZ_val = np.load('Z_data/ConvNN+AE+D/n_features=6_memory_indices=[0, 1, 2, 3, 4, 5]_latent_dims=5_past_timesteps=3/20251112125355_Zval_ConvNN+AE+D_tp=3.npy')
-# XZ_train = np.load('Z_data/ConvNN+AE+D/n_features=6_memory_indices=[0, 1, 2, 3, 4, 5]_latent_dims=5_past_timesteps=3/20251112125355_Ztrain_ConvNN+AE+D_tp=3.npy')
-# XZ_val = np.load('Z_data/ConvNN+AE+D/n_features=6_memory_indices=[0, 1, 2, 3, 4, 5]_latent_dims=5_past_timesteps=3/20251112125355_Zval_ConvNN+AE+D_tp=3.npy')
+'''
+Module for training polynomial ODEs with PySINDy
+'''
+# Point to training data
 XZ_train = np.load('Z_data/ConvNN+AE+D/n_features=7_memory_indices=[0, 1, 2, 3, 4, 5, 6]_latent_dims=3_past_timesteps=20/20251215092753_global_ocean_land_rp=False_eps=1.0_Ztrain_ConvNN+AE+D_tp=20_wd=0.0.npy')
 XZ_val = np.load('Z_data/ConvNN+AE+D/n_features=7_memory_indices=[0, 1, 2, 3, 4, 5, 6]_latent_dims=3_past_timesteps=20/20251215092753_global_ocean_land_rp=False_eps=1.0_Zval_ConvNN+AE+D_tp=20_wd=0.0.npy')
 
-sep = None
+# Adjust parameters for ODE inputs 
+sep = None  # Reduce the amount of training data for SR 
 # last_x_ind = 6  # exclude present precip
-x_inds = [1, 2, 3]
-first_z_ind = -3
+x_inds = [1, 2, 3]  # Select certain forcing variables
+first_z_ind = -3  # # latent_dims
 x_train= list(XZ_train[::sep, :, x_inds])
 z_train= list(XZ_train[::sep, :, first_z_ind:])
 x_val= list(XZ_val[::sep, :, x_inds])
 z_val= list(XZ_val[::sep, :, first_z_ind:])
 
 # Learn ODE without other Z_k variables
-degree = 3
+degree = 3  # Polynomial degree
 #lambdas = np.linspace(1.e-5, 1.e-3, 10)
-lambdas = [0.00034]
+lambdas = [0.00034]  # Regularization strength
 lambdas_scores = np.zeros(shape=(len(lambdas), 2))
 for i, lmbda in enumerate(lambdas):
     print("LAMBDA: ", lmbda)
