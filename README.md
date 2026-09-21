@@ -13,8 +13,8 @@ Contact: Jurij Schönfeld, jurij.schoenfeld@dlr.de
 
 ## Lorenz-96
 ### online runs:
-Simulation data from different parameterizations covers several GB of data and is not shared in this repository. Instead data can be reproduced by calling the `run_online` function in `L96/L96.py`. Specify the parameterization that should be used e.g. `L96/networks_paper/M=1000_dz=6_w=1e-06_20260529142124.pkl` to recreate the simulation used for analysis of the best parameterization found in the paper. If model_path is not given as a variable, the full set of L96 equations is simulated creating the reference run. The default behavior automaticall chooses seed and initial conditions used to create the simulation data. <br>
-To recreate the weather statistics point to your local copy of the reference simulation to draw initial conditions, all possible initial conditions are expected to be seperated by a time interval of 10 MTU (10.000 time steps). 
+Simulation data from different parameterizations covers several GB of data and is not shared in this repository. Instead data can be reproduced by calling the `run_online` function in `L96/L96.py`. Specify the parameterization that should be used to recreate the simulations. If model_path is not given as a variable, the full set of L96 equations is simulated creating the reference run. The default behavior automaticall chooses seed and initial conditions used to create the simulation data. <br>
+To recreate the weather statistics use `make_weather_runs`. The function automatically points to the published initial conditions and sets the correct seeds. 
 
 ### training:
 All parameterizations trained for this paper are available from the [`networks_paper/`](L96/networks_paper) folder. You can train your own parameterizations in the `parameterizations.py` module, for that you need to recreate the reference simulation data as explained in the previous section.
