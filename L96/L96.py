@@ -405,7 +405,10 @@ if __name__=='__main__':
     path = None  # This will create the reference run
 
     # Here you can point to a parameterization and run it online
-    # path = 'networks_paper/M=1000_dz=6_w=1e-06_20260529142124.pkl'  # Our best model
+    # path = 'L96/networks_paper/linear_ODE_dz=6_20260601162804.pkl'  # Our best ODE-model
+    # path = 'L96/networks_paper/baseline_nonlocal_w=0.001_20250905161835.pkl'  # Non-local baseline
+    # path = 'L96/networks_paper/baseline_local_w=0.001_20250905153939.pkl'  # Local baseline
+    # path = 'L96/networks_paper/M=1000_dz=8_w=0.0_20260529142146.pkl'  # AE-model
     
     # Long time online simulation
     # This will save the data in chunks into the temp directory to save RAM

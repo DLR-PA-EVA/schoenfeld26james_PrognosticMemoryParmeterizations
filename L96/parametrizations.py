@@ -681,7 +681,8 @@ if __name__=='__main__':
     L96 = xr.open_dataset(f'online_runs/NO_PARAMETRIZATION/m=0.001_tau=0.001_t=10000MTU_20250903172407.nc')  # Point this to your reference simulation
 
     # Init model
-    model = NNpAEpD(n_neighbours=0, past_timesteps=args.past_timesteps, latent_dims=args.latent_dims, m=m, tau=tau)
+    model = NNpAEpD(n_neighbours=0, past_timesteps=args.past_timesteps, latent_dims=args.latent_dims, m=m, tau=tau)  # Train AE
+    # model = NN(n_neighbours=7, past_timesteps=0, latent_dims=0, m=m, tau=tau, model_name='NN')  # Train non-local baseline
     model.memory_cutoff = m
     model.tau = tau
 
